@@ -49,7 +49,7 @@ def main() -> None:
 
     noisy_dir = Path(args.noisy_dir)
     clean_dir = Path(args.clean_dir)
-    noisy_files = sorted(noisy_dir.glob("*.wav"))
+    noisy_files = sorted(noisy_dir.rglob("*.wav"))
 
     if not noisy_files:
         logger.error(f"未在 {noisy_dir} 中找到 WAV 文件")
