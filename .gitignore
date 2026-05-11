@@ -1,0 +1,28 @@
+# 数据集音频文件 (不纳入版本控制)
+datasets/raw/LibriSpeech/
+datasets/raw/DEMAND/
+datasets/processed/clean/
+datasets/processed/noise/
+datasets/splits/*.json
+
+# 模型权重
+checkpoints/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 日志
+logs/
+
+# 虚拟环境
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store

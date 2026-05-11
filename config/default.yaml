@@ -1,0 +1,40 @@
+# 全局默认配置 — 所有模块的共享参数
+# 训练/推理脚本通过 --config 参数加载此文件，各模型可用自己的 yaml 覆盖特定字段
+
+# --- 音频 I/O ---
+audio:
+  sample_rate: 16000       # 统一采样率 (Hz)
+  bit_depth: 16            # PCM 位深
+  channels: 1              # 单声道
+  duration: 4.0            # 训练片段时长 (秒)
+
+# --- STFT 参数 ---
+stft:
+  n_fft: 512               # FFT 点数 (窗长)
+  hop_length: 256          # 帧移 (50% overlap)
+  win_length: 512          # 窗长
+  window: "hann"           # 窗函数类型
+
+# --- 动态混合 ---
+mixing:
+  snr_low: -5              # 最低 SNR (dB)
+  snr_high: 15             # 最高 SNR (dB)
+  target_rms: -25          # 目标 RMS 电平 (dBFS)
+
+# --- 数据增强 ---
+augment:
+  freq_mask_width: 16      # 频率掩蔽最大宽度 (频点)
+  time_mask_width: 20      # 时间掩蔽最大宽度 (帧)
+  mask_prob: 0.1           # 每种掩蔽的触发概率
+  volume_range: 3.0        # 音量扰动范围 (±dB)
+  mute_prob: 0.05          # 随机静音片段概率
+
+# --- 评估 ---
+eval:
+  segsnr_frame_ms: 30      # SegSNR 帧长 (ms)
+  stoi_fs: 16000           # STOI 计算采样率
+
+# --- 日志 ---
+logging:
+  level: "INFO"
+  file: "logs/app.log"

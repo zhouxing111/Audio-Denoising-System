@@ -1,0 +1,11 @@
+# 传统维纳滤波配置 — 无训练参数，仅推理时的算法参数
+
+wiener:
+  frame_ms: 32              # 帧长 (ms)
+  noise_window_ms: 500      # 噪声估计窗口 (ms) — 使用前 N ms 估计噪声剖面
+  noise_threshold: 0.05     # 噪声门限 (相对能量)
+
+spectral_subtraction:
+  alpha: 2.0                # 过减因子
+  beta: 0.01                # 频谱底板 (相对最大幅度)
+  frame_ms: 32

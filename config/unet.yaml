@@ -1,0 +1,22 @@
+# U-Net 模型训练配置 — 继承 default.yaml，覆盖训练相关超参数
+
+model:
+  name: "unet"
+  n_fft: 512
+  hop_length: 256
+
+training:
+  batch_size: 16
+  epochs: 100
+  lr: 0.001
+  lr_decay: 0.95            # 每 epoch 衰减因子
+  weight_decay: 0.0001
+  num_workers: 4
+  device: "cuda"
+  gradient_clip: 1.0
+  checkpoint_dir: "checkpoints/unet"
+  log_interval: 50          # 每 N 步打印日志
+
+loss:
+  mask_weight: 1.0          # IRM 掩膜 MSE 损失权重
+  magnitude_weight: 0.5     # 幅度谱 L1 损失权重
