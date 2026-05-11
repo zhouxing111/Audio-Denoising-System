@@ -153,31 +153,31 @@ class UNetDenoiser(BaseDenoiser, nn.Module):
 
         # Decoder (with skip connections)
         d7 = self.up7(b)
-        d7 = self._crop_concat(d7, e7)
+        d7 = self._align_and_concat(d7, e7)
         d7 = self.dec7(d7)
 
         d6 = self.up6(d7)
-        d6 = self._crop_concat(d6, e6)
+        d6 = self._align_and_concat(d6, e6)
         d6 = self.dec6(d6)
 
         d5 = self.up5(d6)
-        d5 = self._crop_concat(d5, e5)
+        d5 = self._align_and_concat(d5, e5)
         d5 = self.dec5(d5)
 
         d4 = self.up4(d5)
-        d4 = self._crop_concat(d4, e4)
+        d4 = self._align_and_concat(d4, e4)
         d4 = self.dec4(d4)
 
         d3 = self.up3(d4)
-        d3 = self._crop_concat(d3, e3)
+        d3 = self._align_and_concat(d3, e3)
         d3 = self.dec3(d3)
 
         d2 = self.up2(d3)
-        d2 = self._crop_concat(d2, e2)
+        d2 = self._align_and_concat(d2, e2)
         d2 = self.dec2(d2)
 
         d1 = self.up1(d2)
-        d1 = self._crop_concat(d1, e1)
+        d1 = self._align_and_concat(d1, e1)
         d1 = self.dec1(d1)
 
         mask = self.sigmoid(self.out_conv(d1))
@@ -187,8 +187,12 @@ class UNetDenoiser(BaseDenoiser, nn.Module):
         return mask
 
     @staticmethod
-    def _crop_concat(dec: Tensor, enc: Tensor) -> Tensor:
-        """裁剪 decoder 特征与 encoder 尺寸对齐后拼接。
+    def _align_and_concat(dec: Tensor, enc: Tensor) -> Tensor:
+        """对齐 decoder 与 encoder 空间尺寸后沿通道维拼接。
+
+        处理奇数尺寸导致的 ±1 像素偏差 (如 257 → 256):
+        - decoder 偏大时裁剪
+        - decoder 偏小时零填充
 
         Args:
             dec: decoder 上采样特征.
@@ -198,7 +202,20 @@ class UNetDenoiser(BaseDenoiser, nn.Module):
             拼接后的特征.
         """
         _, _, h_enc, w_enc = enc.shape
-        dec = dec[:, :, :h_enc, :w_enc]
+        _, _, h_dec, w_dec = dec.shape
+
+        # 频率维对齐
+        if h_dec > h_enc:
+            dec = dec[:, :, :h_enc, :]
+        elif h_dec < h_enc:
+            dec = torch.nn.functional.pad(dec, (0, 0, 0, h_enc - h_dec))
+
+        # 时间维对齐
+        if w_dec > w_enc:
+            dec = dec[:, :, :, :w_enc]
+        elif w_dec < w_enc:
+            dec = torch.nn.functional.pad(dec, (0, w_enc - w_dec))
+
         return torch.cat([dec, enc], dim=1)
 
     def denoise_audio(self, waveform: np.ndarray, sr: int) -> np.ndarray:
