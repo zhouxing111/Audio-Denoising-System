@@ -157,7 +157,30 @@ python scripts/evaluate.py --noisy_dir datasets/test_noisy --clean_dir datasets/
 python scripts/train.py --config config/unet.yaml --base_config config/default.yaml --clean_dir datasets/processed/clean --noise_dir datasets/processed/noise
 ```
 
-### 4. 启动 GUI
+### 4. 生成实验图表
+
+训练和评估完成后，一键生成全部科研报告所需图表：
+
+```bash
+python scripts/plot_results.py --eval_csv evaluation_report.csv --train_csv logs/training_history.csv --output_dir results/figures
+```
+
+可选参数：
+- `--model_ckpt checkpoints/unet/best_model.pt` — 生成 IRM 掩膜 + t-SNE 特征图
+- `--test_audio test.wav` — 指定用于掩膜可视化的测试音频
+
+自动生成的图表：
+```
+results/figures/
+├── training_curves.png         # Loss + LR 训练曲线
+├── algorithm_comparison.png    # 多算法柱状图对比
+├── quality_vs_speed.png        # 质量-推理速度散点图
+├── irm_mask_example.png        # IRM 掩膜三行热力图
+├── feature_tsne.png            # t-SNE 特征降维散点图
+└── activation_map.png          # 激活图叠加
+```
+
+### 5. 启动 GUI
 
 ```bash
 python ui/main_window.py
@@ -220,7 +243,9 @@ audio-denoising/
 ├── scripts/                    # 入口脚本
 │   ├── train.py                # U-Net 训练 (argparse + YAML 配置)
 │   ├── inference.py            # 单文件命令行推理 (--algo wiener|spectral_sub)
-│   └── evaluate.py             # 批量评估 → CSV 对比报告
+│   ├── evaluate.py             # 批量评估 → CSV 对比报告
+│   └── prepare_data.py         # 数据集自动化预处理
+│   └── plot_results.py         # 一键生成全部实验图表
 │
 ├── tests/                      # 单元测试 (pytest)
 │   ├── test_dataset.py         # 数据集 shape/SNR 范围验证
@@ -228,6 +253,8 @@ audio-denoising/
 │   └── test_models.py          # 模型推理 shape/值域验证
 │
 ├── checkpoints/                # 模型权重存放 (gitignore)
+├── logs/                       # 训练日志和 loss CSV (gitignore)
+├── results/                    # 实验图表输出 (gitignore)
 ├── requirements.txt            # Python 完整依赖列表
 └── README.md                   # 项目文档
 ```
@@ -253,6 +280,11 @@ audio-denoising/
 | `unet.py` | `UNetDenoiser` — 7 层 Encoder-Decoder (Conv2d+BN+ReLU) + Skip Connections → Sigmoid 输出 IRM 掩膜；训练损失 = MSE(掩膜) + L1(幅度谱)；推理时 STFT → 掩膜 → iSTFT 完整闭环 |
 
 ### 评估基准层 (`evaluation/`)
+
+| 文件 | 功能 |
+|------|------|
+| `metrics.py` | `compute_all_metrics()` — 计算 8 项客观指标 (SNR/SegSNR/SI-SDR/STOI/PESQ/LSD/DNSMOS) |
+| `visualizer.py` | 包含基础展示图 (波形/频谱/梅尔谱) 和科研图表 (训练曲线/算法对比柱状图/t-SNE/IRM 掩膜/激活图)，共计 11 个绘图函数 |
 
 | 指标 | 类别 | 范围 | 说明 |
 |------|------|------|------|

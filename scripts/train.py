@@ -9,6 +9,7 @@ scripts/train.py — U-Net 模型训练入口
 """
 
 import argparse
+import csv
 import logging
 import os
 import sys
@@ -24,6 +25,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from data.dataset import DenoisingDataset
+from evaluation.visualizer import plot_training_curves
 from models.unet import UNetDenoiser
 
 
@@ -244,14 +246,26 @@ def main() -> None:
 
     os.makedirs(cfg["training"]["checkpoint_dir"], exist_ok=True)
 
+    # CSV 记录训练历史，供后续出图使用
+    csv_path = os.path.join("logs", "training_history.csv")
+    os.makedirs("logs", exist_ok=True)
+    csv_file = open(csv_path, "w", newline="")
+    csv_writer = csv.writer(csv_file)
+    csv_writer.writerow(["epoch", "train_loss", "lr"])
+
     for epoch in range(start_epoch, cfg["training"]["epochs"]):
         logger.info(f"--- Epoch {epoch + 1}/{cfg['training']['epochs']} ---")
 
         train_loss = train_epoch(model, train_loader, optimizer, device, cfg)
         scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
 
         logger.info(f"Epoch {epoch + 1} | Train Loss: {train_loss:.4f} | "
-                     f"LR: {scheduler.get_last_lr()[0]:.6f}")
+                     f"LR: {current_lr:.6f}")
+
+        # 记录到 CSV
+        csv_writer.writerow([epoch + 1, f"{train_loss:.6f}", f"{current_lr:.8f}"])
+        csv_file.flush()
 
         # 保存最佳模型
         if train_loss < best_loss:
@@ -273,7 +287,14 @@ def main() -> None:
                 cfg["training"]["checkpoint_dir"], f"checkpoint_epoch{epoch+1}.pt"
             ))
 
+    csv_file.close()
     logger.info("训练完成")
+
+    # 自动生成训练曲线图
+    fig_path = os.path.join("logs", "training_curves.png")
+    fig = plot_training_curves(csv_path, title="U-Net Training Curves")
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    logger.info(f"训练曲线图已保存: {fig_path}")
 
 
 if __name__ == "__main__":

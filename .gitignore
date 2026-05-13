@@ -16,6 +16,9 @@ __pycache__/
 # 日志
 logs/
 
+# 实验结果图表
+results/
+
 # 虚拟环境
 .venv/
 venv/
