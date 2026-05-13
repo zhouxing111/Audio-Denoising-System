@@ -80,6 +80,10 @@ def parse_args() -> argparse.Namespace:
         "--target_sr", type=int, default=16000,
         help="目标采样率 (Hz)",
     )
+    parser.add_argument(
+        "--chunk_duration", type=float, default=10.0,
+        help="噪声切分时长 (秒), 将长文件切成等长片段以降低训练 I/O",
+    )
     return parser.parse_args()
 
 
@@ -204,29 +208,50 @@ def process_clean_speech(
 
 
 def process_noise(
-    files: list[dict], output_dir: Path, target_sr: int
+    files: list[dict], output_dir: Path, target_sr: int,
+    chunk_duration: float = 10.0,
 ) -> int:
     """转换噪声文件并按噪声类型组织输出。
+
+    长噪声文件 (如 DEMAND 的 5 分钟) 将被切分为等长片段，
+    防止训练时每次加载 19MB 文件只取 4s 的 I/O 浪费。
 
     Args:
         files: find_demand_files 返回的文件列表.
         output_dir: 输出根目录 (noise/ 将创建在此下).
         target_sr: 目标采样率.
+        chunk_duration: 切分片段时长 (秒), 0 表示不切分.
 
     Returns:
-        已处理的噪声文件总数.
+        已处理的噪声 chunk 总数.
     """
     noise_dir = output_dir / "noise"
+    chunk_samples = int(chunk_duration * target_sr) if chunk_duration > 0 else 0
     total = 0
+
     for item in tqdm(files, desc="Processing DEMAND"):
         out_subdir = noise_dir / item["noise_type"]
         out_subdir.mkdir(parents=True, exist_ok=True)
-        out_path = out_subdir / item["filename"]
 
-        if not out_path.exists():
-            waveform = convert_to_mono_16k(item["path"], target_sr)
-            sf.write(str(out_path), waveform, target_sr, subtype="PCM_16")
-        total += 1
+        waveform = convert_to_mono_16k(item["path"], target_sr)
+        n_total = len(waveform)
+
+        if chunk_samples > 0 and n_total > chunk_samples:
+            # 切分为多个等长片段
+            n_chunks = n_total // chunk_samples
+            for i in range(n_chunks):
+                chunk = waveform[i * chunk_samples : (i + 1) * chunk_samples]
+                out_name = f"{item['noise_type']}_{i:04d}.wav"
+                out_path = out_subdir / out_name
+                if not out_path.exists():
+                    sf.write(str(out_path), chunk, target_sr, subtype="PCM_16")
+                total += 1
+            # 尾部不足一个 chunk 的部分丢弃
+        else:
+            out_path = out_subdir / item["filename"]
+            if not out_path.exists():
+                sf.write(str(out_path), waveform, target_sr, subtype="PCM_16")
+            total += 1
     return total
 
 
@@ -334,8 +359,10 @@ def main() -> None:
     # ---- 2. 转换纯净语音 ----
     speaker_files = process_clean_speech(clean_files, output_dir, args.target_sr)
 
-    # ---- 3. 转换噪声 ----
-    noise_total = process_noise(noise_files, output_dir, args.target_sr)
+    # ---- 3. 转换噪声 (自动切分为 chunk 以降低训练 I/O) ----
+    noise_total = process_noise(
+        noise_files, output_dir, args.target_sr, chunk_duration=args.chunk_duration,
+    )
 
     # ---- 4. 说话人级分割 ----
     train, val, test = split_speakers(

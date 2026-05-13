@@ -98,12 +98,12 @@ datasets/raw/
 ### 3. 运行自动化预处理
 
 ```bash
-python scripts/prepare_data.py --raw_dir datasets/raw --output_dir datasets/processed --val_ratio 0.1 --test_ratio 0.1
+python scripts/prepare_data.py --raw_dir datasets/raw --output_dir datasets/processed --val_ratio 0.1 --test_ratio 0.1 --chunk_duration 10.0
 ```
 
 脚本自动完成：
 - 扫描 LibriSpeech 全部 `.flac` 文件 → 转换为 16kHz 单声道 WAV
-- 扫描 DEMAND 全部噪声 `.wav` → 重采样至 16kHz
+- 扫描 DEMAND 全部噪声 `.wav` → 重采样至 16kHz，**自动切分为 10 秒片段**（避免训练时加载 5 分钟整文件）
 - 按 speaker_id / 噪声类型组织输出目录
 - 生成说话人级 train/val/test 分割列表（同一个说话人不跨集合，防泄露）
 
