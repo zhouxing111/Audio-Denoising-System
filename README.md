@@ -97,11 +97,7 @@ datasets/raw/
 ### 3. 运行自动化预处理
 
 ```bash
-python scripts/prepare_data.py \
-  --raw_dir datasets/raw \
-  --output_dir datasets/processed \
-  --val_ratio 0.1 \
-  --test_ratio 0.1
+python scripts/prepare_data.py --raw_dir datasets/raw --output_dir datasets/processed --val_ratio 0.1 --test_ratio 0.1
 ```
 
 脚本自动完成：
@@ -128,45 +124,37 @@ datasets/
     ├── val_clean.json
     └── test_clean.json
 ```
-│   │   └── noise_001.wav
-│   └── ...
-```
+
+脚本执行完毕后，终端会输出下一步的 U-Net 训练命令，直接复制运行即可。
 
 ## 快速开始
 
 ### 1. 命令行推理 (单文件)
 
 ```bash
-# 维纳滤波降噪
 python scripts/inference.py input.wav --algo wiener --output clean.wav
+```
 
-# 谱减法降噪 + 保存对比图
-python scripts/inference.py input.wav --algo spectral_sub \
-  --output clean.wav --plot comparison.png
+带纯净参考计算指标：
+```bash
+python scripts/inference.py input.wav --algo wiener --clean reference.wav --output clean.wav
+```
 
-# 有纯净参考时计算全部指标
-python scripts/inference.py input.wav --algo wiener \
-  --clean reference.wav --output clean.wav
+谱减法 + 保存对比图：
+```bash
+python scripts/inference.py input.wav --algo spectral_sub --output clean.wav --plot comparison.png
 ```
 
 ### 2. 批量评估
 
 ```bash
-python scripts/evaluate.py \
-  --noisy_dir datasets/test_noisy/ \
-  --clean_dir datasets/test_clean/ \
-  --algorithms wiener spectral_sub \
-  --output evaluation_report.csv
+python scripts/evaluate.py --noisy_dir datasets/test_noisy --clean_dir datasets/test_clean --algorithms wiener spectral_sub --output evaluation_report.csv
 ```
 
 ### 3. 训练 U-Net 模型
 
 ```bash
-python scripts/train.py \
-  --config config/unet.yaml \
-  --base_config config/default.yaml \
-  --clean_dir datasets/clean/ \
-  --noise_dir datasets/noise/
+python scripts/train.py --config config/unet.yaml --base_config config/default.yaml --clean_dir datasets/processed/clean --noise_dir datasets/processed/noise
 ```
 
 ### 4. 启动 GUI
