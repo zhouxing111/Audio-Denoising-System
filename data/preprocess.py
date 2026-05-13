@@ -13,19 +13,55 @@ from scipy.signal import resample_poly
 def load_audio(file_path: str, target_sr: int = 16000) -> tuple[np.ndarray, int]:
     """加载任意格式音频文件，重采样到目标采样率并转为单声道。
 
+    支持 WAV/FLAC/OGG (via soundfile) 和 M4A/MP3/AAC (via librosa fallback)。
+
     Args:
-        file_path: 音频文件路径 (.wav, .mp3, .flac 等).
+        file_path: 音频文件路径.
         target_sr: 目标采样率 (Hz), 默认 16000.
 
     Returns:
         (waveform, sample_rate): 波形 numpy 数组和实际采样率.
     """
-    waveform, sr = sf.read(file_path, dtype="float32")
+    waveform, sr = _read_audio(file_path)
     # 多声道 → 单声道 (取均值)
     if waveform.ndim > 1:
         waveform = waveform.mean(axis=1)
     waveform = resample_if_needed(waveform, sr, target_sr)
     return waveform.astype(np.float32), target_sr
+
+
+def _read_audio(file_path: str) -> tuple[np.ndarray, int]:
+    """两级 fallback 读取音频：soundfile → librosa。
+
+    soundfile 处理 WAV/FLAC/OGG (高性能)；
+    librosa 处理 M4A/MP3/AAC 等压缩格式 (依赖 audioread + ffmpeg)。
+
+    Args:
+        file_path: 音频文件路径.
+
+    Returns:
+        (waveform, sample_rate).
+
+    Raises:
+        RuntimeError: 两种方式均读取失败.
+    """
+    # 第一级：soundfile (高速, 多数格式)
+    try:
+        waveform, sr = sf.read(file_path, dtype="float32")
+        return waveform, sr
+    except Exception:
+        pass
+
+    # 第二级：librosa (全覆盖, 依赖 ffmpeg)
+    try:
+        import librosa
+        waveform, sr = librosa.load(file_path, sr=None, mono=False)
+        return waveform.astype(np.float32), sr
+    except Exception:
+        raise RuntimeError(
+            f"无法读取音频文件: {file_path}。"
+            f"请确认文件未损坏，且已安装 ffmpeg (brew install ffmpeg 或 apt install ffmpeg)"
+        )
 
 
 def resample_if_needed(

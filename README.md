@@ -4,8 +4,9 @@
 
 ## 核心功能
 
-- **双模式音源输入**：支持本地文件加载和麦克风在线录音（最长 30s，实时波形预览）
-- **多算法支持**：频域维纳滤波 / 谱减法 / U-Net 深度学习模型 / 音频修复
+- **双模式音源输入**：支持 WAV/FLAC/MP3/M4A 文件加载和麦克风在线录音（最长 30s，实时波形预览）
+- **多算法支持**：频域维纳滤波 / 谱减法 / U-Net 深度学习模型（训练完可全链路调用）
+- **离线预混合加速**：训练前一次性生成 .npy 训练对，训练速度提升 10~20 倍
 - **实时可视化**：时域波形对比、STFT 频谱图、梅尔谱，左右分屏同步展示
 - **全面评估体系**：SNR / SegSNR / SI-SDR / STOI / PESQ / LSD / DNSMOS 共 7 项指标，得分板彩色编码
 - **噪声类型诊断**：VAD 分离语音帧 → 频谱分析 → 自动识别白噪声/低频嗡嗡/背景人声/高频电子噪声
@@ -119,55 +120,67 @@ datasets/
 │       ├── kitchen/
 │       ├── traffic/
 │       └── ...               # 共 18 种噪声场景
+├── premixed/                  # 离线预混合 .npy 文件 (premix_dataset.py 生成)
 └── splits/                   # 分割列表 JSON
     ├── train_clean.json
     ├── val_clean.json
     └── test_clean.json
 ```
 
-脚本执行完毕后，终端会输出下一步的 U-Net 训练命令，直接复制运行即可。
+脚本执行完毕后，终端会输出下一步命令，直接复制运行即可。
+
+### 4. 离线预混合（加速训练，推荐）
+
+```bash
+python scripts/premix_dataset.py --clean_dir datasets/processed/clean --noise_dir datasets/processed/noise --output_dir datasets/premixed --num_pairs 20000
+```
+
+生成 20000 对预混合 .npy 文件，训练时加载速度提升 10~20 倍。预混合数据约占用 5GB 磁盘空间。
 
 ## 快速开始
 
 ### 1. 命令行推理 (单文件)
 
 ```bash
+# 维纳滤波
 python scripts/inference.py input.wav --algo wiener --output clean.wav
-```
 
-带纯净参考计算指标：
-```bash
-python scripts/inference.py input.wav --algo wiener --clean reference.wav --output clean.wav
-```
-
-谱减法 + 保存对比图：
-```bash
+# 谱减法 + 对比图
 python scripts/inference.py input.wav --algo spectral_sub --output clean.wav --plot comparison.png
+
+# U-Net 深度学习
+python scripts/inference.py input.m4a --algo unet --ckpt checkpoints/unet/best_model.pt --output clean.wav
 ```
+
+所有格式 (.wav .flac .mp3 .m4a .aac) 均可作为输入。
 
 ### 2. 批量评估
 
 ```bash
-python scripts/evaluate.py --noisy_dir datasets/test_noisy --clean_dir datasets/test_clean --algorithms wiener spectral_sub --output evaluation_report.csv
+python scripts/evaluate.py --noisy_dir datasets/test_noisy --clean_dir datasets/test_clean --algorithms wiener spectral_sub unet --ckpt checkpoints/unet/best_model.pt --output evaluation_report.csv
 ```
 
 ### 3. 训练 U-Net 模型
 
+动态混合模式（在线合成带噪数据）：
 ```bash
-python scripts/train.py --config config/unet.yaml --base_config config/default.yaml --clean_dir datasets/processed/clean --noise_dir datasets/processed/noise
+python scripts/train.py --config config/unet.yaml --clean_dir datasets/processed/clean --noise_dir datasets/processed/noise
 ```
+
+预混合模式（先运行 premix_dataset.py，再训练，速度提升 10~20 倍）：
+```bash
+python scripts/train.py --config config/unet.yaml --use_premix --premix_dir datasets/premixed
+```
+
+训练完成后，checkpoint 保存至 `checkpoints/unet/best_model.pt`。
 
 ### 4. 生成实验图表
 
 训练和评估完成后，一键生成全部科研报告所需图表：
 
 ```bash
-python scripts/plot_results.py --eval_csv evaluation_report.csv --train_csv logs/training_history.csv --output_dir results/figures
+python scripts/plot_results.py --eval_csv evaluation_report.csv --train_csv logs/training_history.csv --model_ckpt checkpoints/unet/best_model.pt --output_dir results/figures
 ```
-
-可选参数：
-- `--model_ckpt checkpoints/unet/best_model.pt` — 生成 IRM 掩膜 + t-SNE 特征图
-- `--test_audio test.wav` — 指定用于掩膜可视化的测试音频
 
 自动生成的图表：
 ```
@@ -183,14 +196,18 @@ results/figures/
 ### 5. 启动 GUI
 
 ```bash
+# 传统算法
 python ui/main_window.py
+
+# 含 U-Net 深度学习模型
+python ui/main_window.py --ckpt checkpoints/unet/best_model.pt
 ```
 
 GUI 操作流程：
 
 **模式 A — 文件加载**：
-1. 点击 **加载音频** → 选择本地 `.wav`/`.mp3`/`.flac` 文件
-2. 下拉选择算法 (Wiener Filter / Spectral Subtraction)
+1. 点击 **加载音频** → 选择本地 `.wav`/`.mp3`/`.flac`/`.m4a`/`.aac` 文件
+2. 下拉选择算法 (Wiener Filter / Spectral Subtraction / U-Net)
 3. 点击 **一键降噪** → 后台线程异步执行
 4. 查看结果：波形对比 / 频谱图 / 评估指标 / 噪声诊断 / 音频回放
 
@@ -241,10 +258,11 @@ audio-denoising/
 │       └── diagnosis_panel.py  # 噪声诊断结论 + 频谱曲线 + 频段标注
 │
 ├── scripts/                    # 入口脚本
-│   ├── train.py                # U-Net 训练 (argparse + YAML 配置)
-│   ├── inference.py            # 单文件命令行推理 (--algo wiener|spectral_sub)
+│   ├── prepare_data.py         # 数据集自动化预处理 (LibriSpeech + DEMAND)
+│   ├── premix_dataset.py       # 离线预混合 → .npy 训练对 (加速训练)
+│   ├── train.py                # U-Net 训练 (--use_premix 启用预混合模式)
+│   ├── inference.py            # 单文件推理 (--algo wiener|spectral_sub|unet)
 │   ├── evaluate.py             # 批量评估 → CSV 对比报告
-│   └── prepare_data.py         # 数据集自动化预处理
 │   └── plot_results.py         # 一键生成全部实验图表
 │
 ├── tests/                      # 单元测试 (pytest)
@@ -277,7 +295,7 @@ audio-denoising/
 | `base.py` | `BaseDenoiser` 抽象基类，定义 `forward()` (训练) 和 `denoise_audio()` (推理) 接口，提供 `_compute_stft()` / `_compute_istft()` 工具方法 |
 | `wiener.py` | `WienerFilter` — 前 N 帧估计噪声功率谱 → 逐帧维纳增益衰减 → 重叠相加还原。参数：帧长 32ms、噪声窗口 500ms |
 | `spectral_sub.py` | `SpectralSubtraction` — 过减因子 α=2.0 + 频谱底板 β=0.01，前 N 帧估计噪声 → 逐帧谱减 → IFFT 重建 |
-| `unet.py` | `UNetDenoiser` — 7 层 Encoder-Decoder (Conv2d+BN+ReLU) + Skip Connections → Sigmoid 输出 IRM 掩膜；训练损失 = MSE(掩膜) + L1(幅度谱)；推理时 STFT → 掩膜 → iSTFT 完整闭环 |
+| `unet.py` | `UNetDenoiser` — 7 层 Encoder-Decoder (Conv2d+BN+ReLU) + Skip Connections → Sigmoid 输出 IRM 掩膜；训练损失 = MSE(掩膜) + L1(幅度谱)；推理 `denoise_audio()` (STFT→掩膜→iSTFT)；GUI/inference/evaluate 全链路集成 |
 
 ### 评估基准层 (`evaluation/`)
 
@@ -301,7 +319,7 @@ audio-denoising/
 
 | 文件 | 功能 |
 |------|------|
-| `main_window.py` | `MainWindow` — 整合全部组件的主窗口。控制面板提供加载/录制/算法选择/降噪/导出按钮。`DenoiseWorker` 后台线程异步降噪，通过信号驱动面板更新 |
+| `main_window.py` | `MainWindow` — 整合全部组件的主窗口。控制面板提供加载/录制/算法选择/降噪/导出。`DenoiseWorker` 支持 Wiener/SpectralSub/U-Net 三种算法。启动参数 `--ckpt` 指定 U-Net 权重路径 |
 | `audio_player.py` | `AudioPlayer` — 带噪/降噪/纯净三段音源切换，播放/暂停/停止，进度条 seek，`sounddevice.OutputStream` 流式回放 |
 | `audio_recorder.py` | `AudioRecorder` — `sounddevice.InputStream` 麦克风采集，`RingBuffer` 线程安全缓冲，QTimer 50ms 实时波形预览，最长 30s 自动停止 |
 | `widgets/waveform_view.py` | `WaveformView` — pyqtgraph 双通道波形对比 (Noisy 红 / Denoised 绿 / Clean 蓝虚线) |

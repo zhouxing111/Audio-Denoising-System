@@ -3,6 +3,7 @@ datasets/raw/LibriSpeech/
 datasets/raw/DEMAND/
 datasets/processed/clean/
 datasets/processed/noise/
+datasets/premixed/
 datasets/splits/*.json
 
 # 模型权重
@@ -22,6 +23,7 @@ results/
 # 虚拟环境
 .venv/
 venv/
+.conda/
 
 # IDE
 .vscode/

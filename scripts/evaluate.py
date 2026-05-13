@@ -33,7 +33,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--algorithms", type=str, nargs="+",
         default=["wiener", "spectral_sub"],
-        help="评估的算法列表",
+        help="评估的算法列表 (wiener spectral_sub unet)",
+    )
+    parser.add_argument(
+        "--ckpt", type=str, default="checkpoints/unet/best_model.pt",
+        help="U-Net checkpoint 路径 (仅评估 unet 时需要)",
     )
     return parser.parse_args()
 
@@ -57,6 +61,8 @@ def main() -> None:
 
     # 准备去噪器
     denoisers = {}
+    unet_model = None
+    unet_device = None
     for algo in args.algorithms:
         if algo == "wiener":
             from models.wiener import WienerFilter
@@ -64,6 +70,16 @@ def main() -> None:
         elif algo == "spectral_sub":
             from models.spectral_sub import SpectralSubtraction
             denoisers["spectral_sub"] = SpectralSubtraction()
+        elif algo == "unet":
+            import torch
+            from models.unet import UNetDenoiser
+            unet_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            unet_model = UNetDenoiser(n_fft=512, hop_length=256).to(unet_device)
+            ckpt = torch.load(args.ckpt, map_location=unet_device)
+            unet_model.load_state_dict(ckpt["model_state_dict"])
+            unet_model.eval()
+            denoisers["unet"] = None  # 占位，标记为 U-Net
+            logger.info(f"U-Net 模型已加载: {args.ckpt}")
 
     # 写入 CSV
     fieldnames = [
@@ -84,9 +100,12 @@ def main() -> None:
             noisy, sr = load_audio(str(nf))
             clean, _ = load_audio(str(clean_path))
 
-            for algo_name, denoiser in denoisers.items():
+            for algo_name in args.algorithms:
                 logger.info(f"处理: {nf.name} / {algo_name}")
-                denoised = denoiser.denoise_audio(noisy, sr)
+                if algo_name == "unet":
+                    denoised = unet_model.denoise_audio(noisy, sr)
+                else:
+                    denoised = denoisers[algo_name].denoise_audio(noisy, sr)
                 metrics = compute_all_metrics(clean[:len(denoised)], denoised, sr)
 
                 row = {"file": nf.name, "algorithm": algo_name}

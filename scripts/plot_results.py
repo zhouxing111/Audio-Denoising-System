@@ -110,7 +110,7 @@ def generate_from_eval_csv(eval_path: str, output_dir: str) -> dict:
         scatter_data.append({
             "algorithm": algo,
             "pesq": m.get("PESQ_WB", 0),
-            "time_ms": 10 if algo != "UNetDenoiser" else 50,  # 占位, 需实测替换
+            "time_ms": 10 if algo not in ("UNetDenoiser", "unet") else 50,
         })
     fig2 = plot_scatter_quality_speed(scatter_data)
     path2 = os.path.join(output_dir, "quality_vs_speed.png")

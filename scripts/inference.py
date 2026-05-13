@@ -34,8 +34,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--algo", type=str, default="wiener",
-        choices=["wiener", "spectral_sub"],
+        choices=["wiener", "spectral_sub", "unet"],
         help="降噪算法选择",
+    )
+    parser.add_argument(
+        "--ckpt", type=str, default="checkpoints/unet/best_model.pt",
+        help="U-Net checkpoint 路径 (仅 --algo unet 时需要)",
     )
     parser.add_argument(
         "--plot", type=str, default=None, help="保存对比图路径 (可选)"
@@ -60,9 +64,25 @@ def main() -> None:
     if args.algo == "wiener":
         from models.wiener import WienerFilter
         denoiser = WienerFilter()
-    else:
+    elif args.algo == "spectral_sub":
         from models.spectral_sub import SpectralSubtraction
         denoiser = SpectralSubtraction()
+    else:  # unet
+        import torch
+        from models.unet import UNetDenoiser
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = UNetDenoiser(n_fft=512, hop_length=256).to(device)
+        ckpt = torch.load(args.ckpt, map_location=device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        model.eval()
+        denoised = model.denoise_audio(waveform, sr)
+        sf.write(args.output, denoised.astype(np.float32), sr)
+        logger.info(f"降噪音频已保存: {args.output}")
+        if args.plot:
+            fig = plot_comparison(waveform, denoised, sr=sr)
+            fig.savefig(args.plot, dpi=150, bbox_inches="tight")
+            logger.info(f"对比图已保存: {args.plot}")
+        return
 
     # 降噪
     logger.info(f"执行降噪算法: {args.algo}")

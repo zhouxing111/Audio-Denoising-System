@@ -6,7 +6,7 @@ data/ — 数据工程层
 """
 
 from .preprocess import load_audio, normalize_rms, resample_if_needed
-from .dataset import DenoisingDataset
+from .dataset import DenoisingDataset, PremixedDataset
 from .augment import (
     spec_augment,
     volume_perturb,

@@ -10,7 +10,6 @@ import random
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 import torch
 from torch.utils.data import Dataset
 
@@ -120,16 +119,18 @@ class DenoisingDataset(Dataset):
     def _load_random_segment(self, file_list: list[Path]) -> np.ndarray:
         """随机选择一个文件并截取等长片段。
 
+        使用统一的 load_audio() 加载，支持 WAV/FLAC/M4A/MP3 等格式。
+
         Args:
             file_list: 音频文件路径列表.
 
         Returns:
             截取的波形片段, shape (num_samples,).
         """
+        from .preprocess import load_audio
+
         fpath = random.choice(file_list)
-        waveform, sr = sf.read(fpath, dtype="float32")
-        if waveform.ndim > 1:
-            waveform = waveform.mean(axis=1)
+        waveform, _ = load_audio(str(fpath), target_sr=self.sample_rate)
         # 如果音频短于所需长度，循环填充
         if len(waveform) < self.num_samples:
             waveform = _pad_loop(waveform, self.num_samples)
@@ -155,6 +156,45 @@ class DenoisingDataset(Dataset):
         target_noise_rms = clean_rms / (10.0 ** (snr_db / 20.0))
         noise = noise * (target_noise_rms / (noise_rms + 1e-12))
         return clean + noise
+
+
+class PremixedDataset(Dataset):
+    """预混合数据集 — __getitem__ 直接加载 .npy 文件，极快。
+
+    必须先运行 scripts/premix_dataset.py 生成预混合数据。
+    与 DenoisingDataset 不同，此 Dataset 不做任何在线处理。
+    """
+
+    def __init__(self, premix_dir: str):
+        """初始化预混合数据集。
+
+        Args:
+            premix_dir: 包含 noisy_XXXXXX.npy 和 clean_XXXXXX.npy 的目录.
+        """
+        self.dir = Path(premix_dir)
+        self.noisy_files = sorted(self.dir.glob("noisy_*.npy"))
+        self.clean_files = sorted(self.dir.glob("clean_*.npy"))
+        assert len(self.noisy_files) > 0, f"未在 {premix_dir} 找到 noisy_*.npy 文件"
+        assert len(self.noisy_files) == len(self.clean_files), (
+            f"noisy({len(self.noisy_files)}) 与 clean({len(self.clean_files)}) 数量不匹配"
+        )
+
+    def __len__(self) -> int:
+        """返回数据集大小。"""
+        return len(self.noisy_files)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """加载第 idx 对预混合样本。
+
+        Args:
+            idx: 样本索引.
+
+        Returns:
+            (noisy_tensor, clean_tensor): shape 均为 (num_samples,).
+        """
+        noisy = np.load(self.noisy_files[idx]).astype(np.float32)
+        clean = np.load(self.clean_files[idx]).astype(np.float32)
+        return torch.from_numpy(noisy), torch.from_numpy(clean)
 
 
 def _pad_loop(waveform: np.ndarray, target_len: int) -> np.ndarray:

@@ -24,7 +24,7 @@ from tqdm import tqdm
 # 将项目根目录加入 sys.path，确保模块可导入
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from data.dataset import DenoisingDataset
+from data.dataset import DenoisingDataset, PremixedDataset
 from evaluation.visualizer import plot_training_curves
 from models.unet import UNetDenoiser
 
@@ -41,12 +41,12 @@ def parse_args() -> argparse.Namespace:
         help="全局配置文件路径",
     )
     parser.add_argument(
-        "--clean_dir", type=str, required=True,
-        help="纯净语音目录",
+        "--clean_dir", type=str, default=None,
+        help="纯净语音目录 (动态混合模式必需)",
     )
     parser.add_argument(
-        "--noise_dir", type=str, required=True,
-        help="噪声目录",
+        "--noise_dir", type=str, default=None,
+        help="噪声目录 (动态混合模式必需)",
     )
     parser.add_argument(
         "--val_clean_dir", type=str, default=None,
@@ -59,6 +59,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--resume", type=str, default=None,
         help="从 checkpoint 恢复训练",
+    )
+    parser.add_argument(
+        "--use_premix", action="store_true",
+        help="使用预混合数据集 (需先运行 scripts/premix_dataset.py)",
+    )
+    parser.add_argument(
+        "--premix_dir", type=str, default="datasets/premixed",
+        help="预混合数据集目录",
     )
     return parser.parse_args()
 
@@ -199,14 +207,29 @@ def main() -> None:
     logger.info(f"使用设备: {device}")
 
     # 数据集
-    train_dataset = DenoisingDataset(
-        clean_dir=args.clean_dir,
-        noise_dir=args.noise_dir,
-        sample_rate=cfg["audio"]["sample_rate"],
-        duration=cfg["audio"]["duration"],
-        snr_low=cfg["mixing"]["snr_low"],
-        snr_high=cfg["mixing"]["snr_high"],
-    )
+    if args.use_premix:
+        if not Path(args.premix_dir).exists():
+            logger.error(f"预混合目录不存在: {args.premix_dir}，请先运行 scripts/premix_dataset.py")
+            sys.exit(1)
+    else:
+        if not args.clean_dir or not args.noise_dir:
+            logger.error("动态混合模式需要 --clean_dir 和 --noise_dir，或用 --use_premix 使用预混合数据")
+            sys.exit(1)
+
+    if args.use_premix:
+        train_dataset = PremixedDataset(premix_dir=args.premix_dir)
+        logger.info(f"使用预混合数据集: {args.premix_dir} ({len(train_dataset)} pairs)")
+    else:
+        train_dataset = DenoisingDataset(
+            clean_dir=args.clean_dir,
+            noise_dir=args.noise_dir,
+            sample_rate=cfg["audio"]["sample_rate"],
+            duration=cfg["audio"]["duration"],
+            snr_low=cfg["mixing"]["snr_low"],
+            snr_high=cfg["mixing"]["snr_high"],
+        )
+        logger.info(f"训练集大小: {len(train_dataset)} 步/epoch (动态混合)")
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg["training"]["batch_size"],
@@ -214,7 +237,6 @@ def main() -> None:
         num_workers=cfg["training"]["num_workers"],
         pin_memory=True,
     )
-    logger.info(f"训练集大小: {len(train_dataset)} 步/epoch")
 
     # 模型
     model = UNetDenoiser(

@@ -54,24 +54,35 @@ logger = logging.getLogger(__name__)
 
 
 class DenoiseWorker(QThread):
-    """后台线程执行降噪计算，避免阻塞 UI。"""
+    """后台线程执行降噪计算，避免阻塞 UI。
+
+    支持三种算法: Wiener Filter, Spectral Subtraction, U-Net.
+    U-Net 需要预先训练好 checkpoint (via scripts/train.py).
+    """
 
     finished = Signal(np.ndarray, int, str)
     error = Signal(str)
     progress = Signal(int)
 
-    def __init__(self, waveform: np.ndarray, sr: int, algorithm: str):
+    def __init__(
+        self, waveform: np.ndarray, sr: int, algorithm: str,
+        model_ckpt: str | None = None, device: str = "cpu",
+    ):
         """初始化降噪工作线程。
 
         Args:
             waveform: 带噪音频波形.
             sr: 采样率.
             algorithm: 算法名称.
+            model_ckpt: U-Net checkpoint 路径 (仅 U-Net 需要).
+            device: 推理设备 (cpu/cuda).
         """
         super().__init__()
         self.waveform = waveform
         self.sr = sr
         self.algorithm = algorithm
+        self.model_ckpt = model_ckpt
+        self.device = device
 
     def run(self) -> None:
         """线程主函数：执行降噪计算。"""
@@ -83,6 +94,27 @@ class DenoiseWorker(QThread):
             elif self.algorithm == "Spectral Subtraction":
                 from models.spectral_sub import SpectralSubtraction
                 denoiser = SpectralSubtraction()
+            elif self.algorithm == "U-Net":
+                import torch
+                from models.unet import UNetDenoiser
+                if not self.model_ckpt or not Path(self.model_ckpt).exists():
+                    raise FileNotFoundError(
+                        f"U-Net checkpoint 未找到: {self.model_ckpt}。"
+                        f"请先运行 scripts/train.py 训练模型，"
+                        f"或通过 --ckpt 参数指定 checkpoint 路径。"
+                    )
+                self.progress.emit(30)
+                device = torch.device(self.device if torch.cuda.is_available() else "cpu")
+                model = UNetDenoiser(n_fft=512, hop_length=256).to(device)
+                ckpt = torch.load(self.model_ckpt, map_location=device)
+                model.load_state_dict(ckpt["model_state_dict"])
+                model.eval()
+                self.progress.emit(50)
+                denoised = model.denoise_audio(self.waveform, self.sr)
+                self.progress.emit(90)
+                self.finished.emit(denoised.astype(np.float32), self.sr, self.algorithm)
+                self.progress.emit(100)
+                return
             else:
                 raise ValueError(f"未知算法: {self.algorithm}")
             self.progress.emit(50)
@@ -106,7 +138,7 @@ class MainWindow(QMainWindow):
       [状态栏 + 进度条]
     """
 
-    def __init__(self):
+    def __init__(self, model_ckpt: str | None = None):
         super().__init__()
         self.setWindowTitle("智能音频降噪系统")
         self.setMinimumSize(1100, 800)
@@ -114,6 +146,7 @@ class MainWindow(QMainWindow):
         self._denoised = None
         self._sr = None
         self._current_algo = None
+        self._model_ckpt = model_ckpt
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -142,7 +175,7 @@ class MainWindow(QMainWindow):
 
         ctrl_layout.addWidget(QLabel("算法:"))
         self._combo_algo = QComboBox()
-        self._combo_algo.addItems(["Wiener Filter", "Spectral Subtraction"])
+        self._combo_algo.addItems(["Wiener Filter", "Spectral Subtraction", "U-Net"])
         ctrl_layout.addWidget(self._combo_algo)
 
         self._btn_denoise = QPushButton("一键降噪")
@@ -208,7 +241,7 @@ class MainWindow(QMainWindow):
         """从文件加载音频，关闭录音面板。"""
         path, _ = QFileDialog.getOpenFileName(
             self, "选择带噪音频", "",
-            "Audio Files (*.wav *.mp3 *.flac);;All Files (*)"
+            "Audio Files (*.wav *.mp3 *.flac *.m4a *.aac);;All Files (*)"
         )
         if not path:
             return
@@ -290,7 +323,10 @@ class MainWindow(QMainWindow):
         self._progress.setValue(0)
         self._status.setText(f"正在执行 {self._current_algo} ...")
 
-        self._worker = DenoiseWorker(self._waveform, self._sr, self._current_algo)
+        self._worker = DenoiseWorker(
+            self._waveform, self._sr, self._current_algo,
+            model_ckpt=self._model_ckpt,
+        )
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
@@ -389,9 +425,16 @@ def main():
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
+    # 解析命令行参数 (--ckpt 用于 U-Net)
+    ckpt = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--ckpt" and i + 1 < len(sys.argv):
+            ckpt = sys.argv[i + 1]
+            break
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    window = MainWindow()
+    window = MainWindow(model_ckpt=ckpt)
     window.show()
     sys.exit(app.exec())
 
