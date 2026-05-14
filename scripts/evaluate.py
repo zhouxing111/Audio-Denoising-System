@@ -1,20 +1,29 @@
 """
 scripts/evaluate.py — 批量评估脚本
 
-对指定目录下的音频对 (带噪+纯净) 批量执行所有算法，生成 CSV 对比报告。
+支持两种模式:
+  模式 A (已有文件): 对 --noisy_dir 和 --clean_dir 中的配对文件评估
+  模式 B (自动生成): 从 --clean_source 和 --noise_source 动态生成测试对后评估
+
+用法:
+  python scripts/evaluate.py --clean_source datasets/processed/clean --noise_source datasets/processed/noise --algorithms wiener spectral_sub unet --ckpt checkpoints/unet/best_model.pt --num_test 20 --output evaluation_report.csv
 """
 
 import argparse
 import csv
 import logging
+import os
+import random
+import shutil
 import sys
 from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from data.preprocess import load_audio
+from data.preprocess import load_audio, normalize_rms, rms_energy
 from evaluation.metrics import compute_all_metrics
 
 
@@ -22,10 +31,32 @@ def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(description="批量评估降噪算法")
     parser.add_argument(
-        "--noisy_dir", type=str, required=True, help="带噪音频目录"
+        "--noisy_dir", type=str, default=None,
+        help="带噪音频目录 (模式 A)",
     )
     parser.add_argument(
-        "--clean_dir", type=str, required=True, help="纯净音频目录 (文件名需对应)"
+        "--clean_dir", type=str, default=None,
+        help="纯净参考目录 (模式 A, 文件名需对应)",
+    )
+    parser.add_argument(
+        "--clean_source", type=str, default=None,
+        help="纯净语音源目录 (模式 B, 自动生成测试对)",
+    )
+    parser.add_argument(
+        "--noise_source", type=str, default=None,
+        help="噪声源目录 (模式 B, 自动生成测试对)",
+    )
+    parser.add_argument(
+        "--num_test", type=int, default=30,
+        help="生成测试对数量 (模式 B)",
+    )
+    parser.add_argument(
+        "--test_snr", type=str, default="-5,0,5,10",
+        help="测试 SNR 列表逗号分隔 (模式 B)",
+    )
+    parser.add_argument(
+        "--test_output_dir", type=str, default="datasets/test_generated",
+        help="测试文件输出目录 (模式 B)",
     )
     parser.add_argument(
         "--output", type=str, default="evaluation_report.csv", help="输出 CSV 路径"
@@ -42,6 +73,99 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def collect_files(root: Path) -> list[Path]:
+    """递归扫描目录收集所有音频文件。
+
+    Args:
+        root: 扫描根目录.
+
+    Returns:
+        音频文件路径列表.
+    """
+    exts = {".wav", ".flac", ".mp3", ".m4a", ".aac"}
+    return sorted([p for p in root.rglob("*") if p.suffix.lower() in exts])
+
+
+def generate_test_pairs(
+    clean_source: Path,
+    noise_source: Path,
+    output_dir: Path,
+    num_pairs: int,
+    snr_list: list[float],
+    duration: float = 4.0,
+    target_sr: int = 16000,
+) -> None:
+    """从纯净语音和噪声源动态生成测试对。
+
+    每个 SNR 等量分配样本，文件命名含 SNR 信息便于追溯。
+
+    Args:
+        clean_source: 纯净语音源目录.
+        noise_source: 噪声源目录.
+        output_dir: 测试文件输出目录.
+        num_pairs: 生成测试对总数.
+        snr_list: SNR 值列表 (dB).
+        duration: 每段时长 (秒).
+        target_sr: 目标采样率.
+    """
+    noisy_dir = output_dir / "noisy"
+    clean_dir = output_dir / "clean"
+
+    # 清空旧数据，避免残留文件干扰
+    if noisy_dir.exists():
+        shutil.rmtree(noisy_dir)
+    if clean_dir.exists():
+        shutil.rmtree(clean_dir)
+    noisy_dir.mkdir(parents=True, exist_ok=True)
+    clean_dir.mkdir(parents=True, exist_ok=True)
+
+    clean_files = collect_files(clean_source)
+    noise_files = collect_files(noise_source)
+    if not clean_files:
+        raise FileNotFoundError(f"未在 {clean_source} 找到音频文件")
+    if not noise_files:
+        raise FileNotFoundError(f"未在 {noise_source} 找到音频文件")
+
+    num_samples = int(duration * target_sr)
+    samples_per_snr = max(1, num_pairs // len(snr_list))
+
+    pair_idx = 0
+    for snr_db in snr_list:
+        for _ in range(samples_per_snr):
+            # 随机选纯净语音片段
+            cf = random.choice(clean_files)
+            clean_full, _ = load_audio(str(cf), target_sr=target_sr)
+            if len(clean_full) < num_samples:
+                repeats = num_samples // len(clean_full) + 1
+                clean_full = np.tile(clean_full, repeats)
+            start_c = random.randint(0, len(clean_full) - num_samples)
+            clean_seg = clean_full[start_c : start_c + num_samples].astype(np.float32)
+
+            # 随机选噪声片段
+            nf = random.choice(noise_files)
+            noise_full, _ = load_audio(str(nf), target_sr=target_sr)
+            if len(noise_full) < num_samples:
+                repeats = num_samples // len(noise_full) + 1
+                noise_full = np.tile(noise_full, repeats)
+            start_n = random.randint(0, len(noise_full) - num_samples)
+            noise_seg = noise_full[start_n : start_n + num_samples].astype(np.float32)
+
+            # 混合
+            clean_rms = rms_energy(clean_seg)
+            noise_rms = rms_energy(noise_seg)
+            target_noise_rms = clean_rms / (10.0 ** (snr_db / 20.0))
+            noise_seg = noise_seg * (target_noise_rms / (noise_rms + 1e-12))
+            noisy_seg = clean_seg + noise_seg
+
+            # 保存
+            name = f"test_{pair_idx:04d}_snr{snr_db:+.0f}dB.wav"
+            sf.write(str(clean_dir / name), clean_seg, target_sr, subtype="PCM_16")
+            sf.write(str(noisy_dir / name), noisy_seg, target_sr, subtype="PCM_16")
+            pair_idx += 1
+
+    logging.info(f"已生成 {pair_idx} 对测试样本至 {output_dir}/")
+
+
 def main() -> None:
     """批量评估主函数。"""
     args = parse_args()
@@ -51,10 +175,25 @@ def main() -> None:
     )
     logger = logging.getLogger(__name__)
 
-    noisy_dir = Path(args.noisy_dir)
-    clean_dir = Path(args.clean_dir)
-    noisy_files = sorted(noisy_dir.rglob("*.wav"))
+    # --- 模式 B: 自动生成测试对 ---
+    if args.clean_source and args.noise_source:
+        snr_list = [float(s.strip()) for s in args.test_snr.split(",")]
+        logger.info(f"自动生成 {args.num_test} 对测试样本 (SNR={snr_list}) ...")
+        generate_test_pairs(
+            Path(args.clean_source), Path(args.noise_source),
+            Path(args.test_output_dir), args.num_test, snr_list,
+        )
+        # 生成后切换到模式 A 路径
+        noisy_dir = Path(args.test_output_dir) / "noisy"
+        clean_dir = Path(args.test_output_dir) / "clean"
+    else:
+        if not args.noisy_dir or not args.clean_dir:
+            logger.error("请指定 --noisy_dir 和 --clean_dir，或使用 --clean_source 和 --noise_source 自动生成")
+            sys.exit(1)
+        noisy_dir = Path(args.noisy_dir)
+        clean_dir = Path(args.clean_dir)
 
+    noisy_files = sorted(noisy_dir.rglob("*.wav"))
     if not noisy_files:
         logger.error(f"未在 {noisy_dir} 中找到 WAV 文件")
         return
@@ -78,7 +217,7 @@ def main() -> None:
             ckpt = torch.load(args.ckpt, map_location=unet_device)
             unet_model.load_state_dict(ckpt["model_state_dict"])
             unet_model.eval()
-            denoisers["unet"] = None  # 占位，标记为 U-Net
+            denoisers["unet"] = None
             logger.info(f"U-Net 模型已加载: {args.ckpt}")
 
     # 写入 CSV

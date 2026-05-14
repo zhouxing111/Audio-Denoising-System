@@ -156,6 +156,14 @@ python scripts/inference.py input.m4a --algo unet --ckpt checkpoints/unet/best_m
 
 ### 2. 批量评估
 
+自动生成测试对并评估（无需预先准备测试文件）：
+
+```bash
+python scripts/evaluate.py --clean_source datasets/processed/clean --noise_source datasets/processed/noise --algorithms wiener spectral_sub unet --ckpt checkpoints/unet/best_model.pt --num_test 30 --output evaluation_report.csv
+```
+
+如果已有测试文件，也可直接指定目录：
+
 ```bash
 python scripts/evaluate.py --noisy_dir datasets/test_noisy --clean_dir datasets/test_clean --algorithms wiener spectral_sub unet --ckpt checkpoints/unet/best_model.pt --output evaluation_report.csv
 ```

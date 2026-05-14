@@ -4,6 +4,7 @@ datasets/raw/DEMAND/
 datasets/processed/clean/
 datasets/processed/noise/
 datasets/premixed/
+datasets/test_generated/
 datasets/splits/*.json
 
 # 模型权重
