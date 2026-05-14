@@ -107,7 +107,10 @@ def setup_logging(log_dir: str = "logs") -> None:
 
 
 def compute_irm(clean_mag: torch.Tensor, noisy_mag: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    """计算理想比例掩膜 IRM = clean_mag / (clean_mag + noise_mag)。
+    """计算理想比例掩膜 IRM = |C|^2 / (|C|^2 + |N|^2)，并裁剪到 [0,1]。
+
+    不能用 clean_mag / noisy_mag，因为 |C+N| 可能小于 |C|（相位相消），
+    导致 target > 1，而 sigmoid 输出 [0,1]，MSE 在那些频点无限发散。
 
     Args:
         clean_mag: 纯净幅度谱.
@@ -117,7 +120,9 @@ def compute_irm(clean_mag: torch.Tensor, noisy_mag: torch.Tensor, eps: float = 1
     Returns:
         IRM 掩膜 (0~1).
     """
-    return clean_mag / (noisy_mag + eps)
+    noise_mag_est = torch.clamp(noisy_mag - clean_mag, min=0.0)
+    irm = clean_mag**2 / (clean_mag**2 + noise_mag_est**2 + eps)
+    return torch.clamp(irm, 0.0, 1.0)
 
 
 def train_epoch(
@@ -147,16 +152,21 @@ def train_epoch(
     for noisy, clean in pbar:
         noisy, clean = noisy.to(device), clean.to(device)
 
-        # STFT → 幅度谱
+        # STFT → 幅度谱 (Hann 窗，与 librosa 默认一致)
+        window = torch.hann_window(cfg["model"]["n_fft"], device=device)
         noisy_stft = torch.stft(
             noisy, n_fft=cfg["model"]["n_fft"],
             hop_length=cfg["model"]["hop_length"],
+            win_length=cfg["model"]["n_fft"],
+            window=window,
             return_complex=True,
             onesided=True,
         )
         clean_stft = torch.stft(
             clean, n_fft=cfg["model"]["n_fft"],
             hop_length=cfg["model"]["hop_length"],
+            win_length=cfg["model"]["n_fft"],
+            window=window,
             return_complex=True,
             onesided=True,
         )
