@@ -221,7 +221,7 @@ class UNetDenoiser(BaseDenoiser, nn.Module):
     def denoise_audio(self, waveform: np.ndarray, sr: int) -> np.ndarray:
         """端到端降噪推理。
 
-        流程: 音频 → STFT → 幅度谱 → 模型预测掩膜 → 掩蔽 → iSTFT → 音频
+        流程: 音频 → STFT → 幅度谱 → 模型预测 → 掩膜平滑 → 掩蔽 → iSTFT → 边界淡出
 
         Args:
             waveform: 带噪音频, shape (n_samples,).
@@ -249,13 +249,41 @@ class UNetDenoiser(BaseDenoiser, nn.Module):
             mask = self.forward(mag_tensor)  # (1, 1, F, T)
             mask = mask.squeeze().cpu().numpy()  # (F, T)
 
-        # 掩蔽 + iSTFT
+        # 掩膜后处理: 平滑 + 地板 + 压缩，消除音量波动和过度抑制
+        from scipy.ndimage import median_filter
+        from scipy.ndimage import uniform_filter1d
+
+        # 1) 沿时间轴做 5 帧移动平均，抑制帧间跳变 (人声一会大一会小的根因)
+        mask = uniform_filter1d(mask.astype(np.float64), size=5, axis=1)
+        # 2) 沿频率轴做 3 点中值滤波，消除孤立频点毛刺 (滋滋声根因)
+        mask = median_filter(mask, size=(3, 1))
+        # 3) 地板: mask 最低 8%，保留微量背景音让听感自然
+        mask = np.maximum(mask, 0.08)
+        # 4) 压缩: 开根号让 mask 分布更平滑，减少 0↔1 剧烈跳变
+        mask = np.sqrt(mask)
+        mask = mask.astype(np.float32)
+
+        # 掩蔽
         denoised_mag = mag * mask
+
+        # 混合 10% 原始带噪信号，避免"真空感"
+        denoised_mag = 0.9 * denoised_mag + 0.1 * mag
+
         denoised_stft = denoised_mag * np.exp(1j * phase)
         denoised_waveform = self._compute_istft(
             denoised_stft,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
+            win_length=self.n_fft,
             length=len(waveform),
-        )
-        return denoised_waveform.astype(np.float32)
+        ).astype(np.float32)
+
+        # 边界淡出
+        fade_len = min(256, len(denoised_waveform) // 4)
+        if fade_len > 0:
+            fade_in = 0.5 - 0.5 * np.cos(np.pi * np.arange(fade_len) / fade_len)
+            fade_out = fade_in[::-1]
+            denoised_waveform[:fade_len] *= fade_in.astype(np.float32)
+            denoised_waveform[-fade_len:] *= fade_out.astype(np.float32)
+
+        return denoised_waveform

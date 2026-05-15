@@ -43,12 +43,12 @@ from data.preprocess import load_audio
 from data.noise_diagnosis import diagnose_noise
 from evaluation.metrics import compute_all_metrics
 
-from .widgets.metrics_panel import MetricsPanel
-from .widgets.waveform_view import WaveformView
-from .widgets.spectrogram_view import SpectrogramView
-from .widgets.diagnosis_panel import DiagnosisPanel
-from .audio_player import AudioPlayer
-from .audio_recorder import AudioRecorder
+from ui.widgets.metrics_panel import MetricsPanel
+from ui.widgets.waveform_view import WaveformView
+from ui.widgets.spectrogram_view import SpectrogramView
+from ui.widgets.diagnosis_panel import DiagnosisPanel
+from ui.audio_player import AudioPlayer
+from ui.audio_recorder import AudioRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,18 @@ class DenoiseWorker(QThread):
             elif self.algorithm == "Spectral Subtraction":
                 from models.spectral_sub import SpectralSubtraction
                 denoiser = SpectralSubtraction()
+            elif self.algorithm == "Audio Inpainting":
+                from models.audio_inpainter import AudioInpainter
+                inpainter = AudioInpainter()
+                self.progress.emit(30)
+                repaired = inpainter.inpaint(
+                    self.waveform, self.sr, method="spline",
+                    model_ckpt=self.model_ckpt,
+                )
+                self.progress.emit(90)
+                self.finished.emit(repaired.astype(np.float32), self.sr, self.algorithm)
+                self.progress.emit(100)
+                return
             elif self.algorithm == "U-Net":
                 import torch
                 from models.unet import UNetDenoiser
@@ -175,7 +187,7 @@ class MainWindow(QMainWindow):
 
         ctrl_layout.addWidget(QLabel("算法:"))
         self._combo_algo = QComboBox()
-        self._combo_algo.addItems(["Wiener Filter", "Spectral Subtraction", "U-Net"])
+        self._combo_algo.addItems(["Wiener Filter", "Spectral Subtraction", "U-Net", "Audio Inpainting"])
         ctrl_layout.addWidget(self._combo_algo)
 
         self._btn_denoise = QPushButton("一键降噪")

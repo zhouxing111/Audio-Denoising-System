@@ -104,5 +104,11 @@ class SpectralSubtraction:
             start = i * hop
             output[start : start + frame_len] += frames[i] * window
             win_sum[start : start + frame_len] += window**2
-        win_sum[win_sum < 1e-12] = 1.0
-        return (output / win_sum).astype(np.float32)
+        win_sum[win_sum < 0.01] = 1.0
+        result = (output / win_sum).astype(np.float32)
+        fade_len = min(frame_len, target_len // 4)
+        if fade_len > 0:
+            fade = 0.5 - 0.5 * np.cos(np.pi * np.arange(fade_len) / fade_len)
+            result[:fade_len] *= fade.astype(np.float32)
+            result[-fade_len:] *= fade[::-1].astype(np.float32)
+        return result

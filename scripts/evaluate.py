@@ -29,7 +29,12 @@ from evaluation.metrics import compute_all_metrics
 
 def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
-    parser = argparse.ArgumentParser(description="批量评估降噪算法")
+    parser = argparse.ArgumentParser(description="批量评估降噪/修复算法")
+    parser.add_argument(
+        "--mode", type=str, default="denoising",
+        choices=["denoising", "inpainting"],
+        help="评估模式: denoising (降噪) 或 inpainting (修复)",
+    )
     parser.add_argument(
         "--noisy_dir", type=str, default=None,
         help="带噪音频目录 (模式 A)",
@@ -68,7 +73,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--ckpt", type=str, default="checkpoints/unet/best_model.pt",
-        help="U-Net checkpoint 路径 (仅评估 unet 时需要)",
+        help="U-Net checkpoint 路径 (unet/inpainting 时需要)",
+    )
+    parser.add_argument(
+        "--methods", type=str, nargs="+",
+        default=["spline", "spectral", "unet"],
+        help="修复方法列表 (仅 --mode inpainting)",
     )
     return parser.parse_args()
 
@@ -166,6 +176,79 @@ def generate_test_pairs(
     logging.info(f"已生成 {pair_idx} 对测试样本至 {output_dir}/")
 
 
+def run_inpainting_eval(args) -> None:
+    """音频修复评估模式。
+
+    从纯净语音生成损坏音频 → 各方法修复 → 与原始对比评估。
+    """
+    logger = logging.getLogger(__name__)
+    if not args.clean_source:
+        logger.error("--clean_source 必须指定 (用于生成损坏音频的纯净语音源)")
+        sys.exit(1)
+
+    from models.audio_inpainter import AudioInpainter
+
+    clean_files = collect_files(Path(args.clean_source))
+    if not clean_files:
+        logger.error(f"未在 {args.clean_source} 找到音频文件")
+        return
+
+    out_dir = Path(args.test_output_dir) / "inpainting"
+    damaged_dir = out_dir / "damaged"
+    repaired_dir = out_dir / "repaired"
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    damaged_dir.mkdir(parents=True)
+    repaired_dir.mkdir(parents=True)
+
+    inpainter = AudioInpainter()
+    samples = min(args.num_test, len(clean_files))
+
+    # 生成损坏音频 + 修复
+    fieldnames = ["file", "method", "SNR (dB)", "SegSNR (dB)", "SI-SDR (dB)", "STOI", "PESQ_WB", "LSD (dB)"]
+    with open(args.output, "w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for idx in range(samples):
+            cf = clean_files[idx]
+            clean, sr = load_audio(str(cf))
+
+            # 截取 4s
+            num_samples = int(4.0 * sr)
+            if len(clean) < num_samples:
+                repeats = num_samples // len(clean) + 1
+                clean = np.tile(clean, repeats)
+            start = random.randint(0, len(clean) - num_samples)
+            clean_seg = clean[start : start + num_samples].astype(np.float32)
+
+            # 生成损坏
+            damaged, gt_regions = AudioInpainter.generate_damaged(
+                clean_seg, sr, num_silence=3, seed=idx,
+            )
+            damaged_name = f"damaged_{idx:04d}.wav"
+            sf.write(str(damaged_dir / damaged_name), damaged, sr, subtype="PCM_16")
+
+            # 各方法修复
+            for method in args.methods:
+                logger.info(f"修复: {damaged_name} / {method}")
+                ckpt = args.ckpt if method == "unet" else None
+                repaired = inpainter.inpaint(damaged, sr, method=method, model_ckpt=ckpt)
+                metrics = compute_all_metrics(clean_seg[:len(repaired)], repaired[:len(clean_seg)], sr)
+
+                row = {"file": damaged_name, "method": method}
+                for key in fieldnames[2:]:
+                    val = metrics.get(key, float("nan"))
+                    row[key] = f"{val:.4f}" if not np.isnan(val) else "N/A"
+                writer.writerow(row)
+
+                # 保存修复后的音频
+                sf.write(str(repaired_dir / f"repaired_{idx:04d}_{method}.wav"),
+                         repaired, sr, subtype="PCM_16")
+
+    logger.info(f"修复评估报告已保存: {args.output}")
+
+
 def main() -> None:
     """批量评估主函数。"""
     args = parse_args()
@@ -174,6 +257,11 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
     logger = logging.getLogger(__name__)
+
+    # --- 模式 C: 音频修复评估 ---
+    if args.mode == "inpainting":
+        run_inpainting_eval(args)
+        return
 
     # --- 模式 B: 自动生成测试对 ---
     if args.clean_source and args.noise_source:

@@ -5,7 +5,7 @@
 ## 核心功能
 
 - **双模式音源输入**：支持 WAV/FLAC/MP3/M4A 文件加载和麦克风在线录音（最长 30s，实时波形预览）
-- **多算法支持**：频域维纳滤波 / 谱减法 / U-Net 深度学习模型（训练完可全链路调用）
+- **多算法支持**：频域维纳滤波 / 谱减法 / U-Net 深度学习模型（训练完可全链路调用）/ 音频修复（时域插值 / 频域重建 / U-Net 迭代修复）
 - **离线预混合加速**：训练前一次性生成 .npy 训练对，训练速度提升 10~20 倍
 - **实时可视化**：时域波形对比、STFT 频谱图、梅尔谱，左右分屏同步展示
 - **全面评估体系**：SNR / SegSNR / SI-SDR / STOI / PESQ / LSD / DNSMOS 共 7 项指标，得分板彩色编码
@@ -150,6 +150,12 @@ python scripts/inference.py input.wav --algo spectral_sub --output clean.wav --p
 
 # U-Net 深度学习
 python scripts/inference.py input.m4a --algo unet --ckpt checkpoints/unet/best_model.pt --output clean.wav
+
+# 音频修复 (三次样条插值)
+python scripts/inference.py damaged.wav --algo inpaint --inpaint_method spline --output repaired.wav
+
+# 音频修复 (U-Net 迭代修复)
+python scripts/inference.py damaged.wav --algo inpaint --inpaint_method unet --ckpt checkpoints/unet/best_model.pt --output repaired.wav
 ```
 
 所有格式 (.wav .flac .mp3 .m4a .aac) 均可作为输入。
@@ -166,6 +172,11 @@ python scripts/evaluate.py --clean_source datasets/processed/clean --noise_sourc
 
 ```bash
 python scripts/evaluate.py --noisy_dir datasets/test_noisy --clean_dir datasets/test_clean --algorithms wiener spectral_sub unet --ckpt checkpoints/unet/best_model.pt --output evaluation_report.csv
+```
+
+音频修复批量评估（自动生成损坏 → 修复 → 对比）：
+```bash
+python scripts/evaluate.py --mode inpainting --clean_source datasets/processed/clean --methods spline spectral unet --ckpt checkpoints/unet/best_model.pt --num_test 20 --output evaluation_report_inpainting.csv
 ```
 
 ### 3. 训练 U-Net 模型
@@ -215,8 +226,8 @@ GUI 操作流程：
 
 **模式 A — 文件加载**：
 1. 点击 **加载音频** → 选择本地 `.wav`/`.mp3`/`.flac`/`.m4a`/`.aac` 文件
-2. 下拉选择算法 (Wiener Filter / Spectral Subtraction / U-Net)
-3. 点击 **一键降噪** → 后台线程异步执行
+2. 下拉选择算法 (Wiener Filter / Spectral Subtraction / U-Net / Audio Inpainting)
+3. 点击 **一键降噪/修复** → 后台线程异步执行
 4. 查看结果：波形对比 / 频谱图 / 评估指标 / 噪声诊断 / 音频回放
 
 **模式 B — 在线录音**：
@@ -304,6 +315,7 @@ audio-denoising/
 | `wiener.py` | `WienerFilter` — 前 N 帧估计噪声功率谱 → 逐帧维纳增益衰减 → 重叠相加还原。参数：帧长 32ms、噪声窗口 500ms |
 | `spectral_sub.py` | `SpectralSubtraction` — 过减因子 α=2.0 + 频谱底板 β=0.01，前 N 帧估计噪声 → 逐帧谱减 → IFFT 重建 |
 | `unet.py` | `UNetDenoiser` — 7 层 Encoder-Decoder (Conv2d+BN+ReLU) + Skip Connections → Sigmoid 输出 IRM 掩膜；训练损失 = MSE(掩膜) + L1(幅度谱)；推理 `denoise_audio()` (STFT→掩膜→iSTFT)；GUI/inference/evaluate 全链路集成 |
+| `audio_inpainter.py` | `AudioInpainter` — 损坏检测 + 三种修复方法 (spline/spectral/unet)；`generate_damaged()` 自动生成静音/削波/频率缺失损坏音频用于评估 |
 
 ### 评估基准层 (`evaluation/`)
 
@@ -327,7 +339,7 @@ audio-denoising/
 
 | 文件 | 功能 |
 |------|------|
-| `main_window.py` | `MainWindow` — 整合全部组件的主窗口。控制面板提供加载/录制/算法选择/降噪/导出。`DenoiseWorker` 支持 Wiener/SpectralSub/U-Net 三种算法。启动参数 `--ckpt` 指定 U-Net 权重路径 |
+| `main_window.py` | `MainWindow` — 整合全部组件的主窗口。控制面板提供加载/录制/算法选择/降噪/导出。`DenoiseWorker` 支持 Wiener/SpectralSub/U-Net/AudioInpainting 四种算法。启动参数 `--ckpt` 指定 U-Net 权重路径 |
 | `audio_player.py` | `AudioPlayer` — 带噪/降噪/纯净三段音源切换，播放/暂停/停止，进度条 seek，`sounddevice.OutputStream` 流式回放 |
 | `audio_recorder.py` | `AudioRecorder` — `sounddevice.InputStream` 麦克风采集，`RingBuffer` 线程安全缓冲，QTimer 50ms 实时波形预览，最长 30s 自动停止 |
 | `widgets/waveform_view.py` | `WaveformView` — pyqtgraph 双通道波形对比 (Noisy 红 / Denoised 绿 / Clean 蓝虚线) |

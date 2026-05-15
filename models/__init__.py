@@ -8,3 +8,4 @@ models/ — 算法引擎层
 from .base import BaseDenoiser
 from .wiener import WienerFilter
 from .spectral_sub import SpectralSubtraction
+from .audio_inpainter import AudioInpainter

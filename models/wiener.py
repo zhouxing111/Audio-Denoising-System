@@ -121,5 +121,12 @@ class WienerFilter:
             end = start + frame_len
             output[start:end] += frames[i] * window
             win_sum[start:end] += window**2
-        win_sum[win_sum < 1e-12] = 1.0
-        return (output / win_sum).astype(np.float32)
+        win_sum[win_sum < 0.01] = 1.0  # 防止边界单帧覆盖区出现除法爆炸
+        result = (output / win_sum).astype(np.float32)
+        # cosine 淡入淡出消除边界爆音
+        fade_len = min(frame_len, target_len // 4)
+        if fade_len > 0:
+            fade = 0.5 - 0.5 * np.cos(np.pi * np.arange(fade_len) / fade_len)
+            result[:fade_len] *= fade.astype(np.float32)
+            result[-fade_len:] *= fade[::-1].astype(np.float32)
+        return result

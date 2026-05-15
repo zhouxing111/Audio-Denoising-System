@@ -34,12 +34,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--algo", type=str, default="wiener",
-        choices=["wiener", "spectral_sub", "unet"],
-        help="降噪算法选择",
+        choices=["wiener", "spectral_sub", "unet", "inpaint"],
+        help="降噪/修复算法选择",
     )
     parser.add_argument(
         "--ckpt", type=str, default="checkpoints/unet/best_model.pt",
-        help="U-Net checkpoint 路径 (仅 --algo unet 时需要)",
+        help="U-Net checkpoint 路径 (unet/inpaint 时需要)",
+    )
+    parser.add_argument(
+        "--inpaint_method", type=str, default="spline",
+        choices=["spline", "spectral", "unet"],
+        help="音频修复方法 (仅 --algo inpaint 时有效)",
     )
     parser.add_argument(
         "--plot", type=str, default=None, help="保存对比图路径 (可选)"
@@ -67,7 +72,7 @@ def main() -> None:
     elif args.algo == "spectral_sub":
         from models.spectral_sub import SpectralSubtraction
         denoiser = SpectralSubtraction()
-    else:  # unet
+    elif args.algo == "unet":
         import torch
         from models.unet import UNetDenoiser
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -80,6 +85,19 @@ def main() -> None:
         logger.info(f"降噪音频已保存: {args.output}")
         if args.plot:
             fig = plot_comparison(waveform, denoised, sr=sr)
+            fig.savefig(args.plot, dpi=150, bbox_inches="tight")
+            logger.info(f"对比图已保存: {args.plot}")
+        return
+    else:  # inpaint
+        from models.audio_inpainter import AudioInpainter
+        inpainter = AudioInpainter()
+        repaired = inpainter.inpaint(
+            waveform, sr, method=args.inpaint_method, model_ckpt=args.ckpt,
+        )
+        sf.write(args.output, repaired.astype(np.float32), sr)
+        logger.info(f"修复音频已保存: {args.output}")
+        if args.plot:
+            fig = plot_comparison(waveform, repaired, sr=sr)
             fig.savefig(args.plot, dpi=150, bbox_inches="tight")
             logger.info(f"对比图已保存: {args.plot}")
         return
