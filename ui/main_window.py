@@ -1,17 +1,11 @@
 """
-ui/main_window.py — 主窗口 (完整版)
+ui/main_window.py — 主窗口 (双模式 + 多方法对比)
 
-双模式工作流:
-  模式A (文件加载): 加载音频 → 选择算法 → 一键降噪 → 全部面板同步更新
-  模式B (在线录音): 录制音频 → 自动存入 → 选择算法 → 降噪展示 (复用后端)
+两种工作模式:
+  降噪模式: Wiener Filter / Spectral Subtraction / U-Net
+  修复模式: Spline Interpolation / Spectral Inpainting / U-Net Inpainting
 
-集成全部 UI 组件:
-  - WaveformView: 时域波形对比
-  - SpectrogramView: 左右频谱图对比
-  - MetricsPanel: 评估指标得分板
-  - DiagnosisPanel: 噪声类型诊断
-  - AudioPlayer: 音频回放控制
-  - AudioRecorder: 麦克风在线录音
+每种模式支持"单选一种方法"或"对比全部方法"。
 """
 
 import logging
@@ -24,6 +18,7 @@ import soundfile as sf
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGroupBox,
@@ -32,6 +27,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -52,102 +48,119 @@ from ui.audio_recorder import AudioRecorder
 
 logger = logging.getLogger(__name__)
 
+# 模式 → 方法列表
+DENOISING_METHODS = ["Wiener Filter", "Spectral Subtraction", "U-Net"]
+INPAINTING_METHODS = ["Spline Interpolation", "Spectral Inpainting", "U-Net Inpainting"]
 
-class DenoiseWorker(QThread):
-    """后台线程执行降噪计算，避免阻塞 UI。
 
-    支持三种算法: Wiener Filter, Spectral Subtraction, U-Net.
-    U-Net 需要预先训练好 checkpoint (via scripts/train.py).
+class BatchWorker(QThread):
+    """后台线程批量执行降噪/修复，支持对比模式。
+
+    串行执行每个方法，通过 progress 信号报告进度 (0~100)。
     """
 
-    finished = Signal(np.ndarray, int, str)
+    finished = Signal(dict, int)  # {method_name: waveform}, sr
     error = Signal(str)
     progress = Signal(int)
 
     def __init__(
-        self, waveform: np.ndarray, sr: int, algorithm: str,
-        model_ckpt: str | None = None, device: str = "cpu",
+        self, waveform: np.ndarray, sr: int, methods: list[str],
+        mode: str, model_ckpt: str | None = None,
     ):
-        """初始化降噪工作线程。
+        """初始化批量工作线程。
 
         Args:
-            waveform: 带噪音频波形.
+            waveform: 带噪/损坏音频波形.
             sr: 采样率.
-            algorithm: 算法名称.
-            model_ckpt: U-Net checkpoint 路径 (仅 U-Net 需要).
-            device: 推理设备 (cpu/cuda).
+            methods: 要执行的方法名列表.
+            mode: "denoising" 或 "inpainting".
+            model_ckpt: U-Net checkpoint 路径.
         """
         super().__init__()
         self.waveform = waveform
         self.sr = sr
-        self.algorithm = algorithm
+        self.methods = methods
+        self.mode = mode
         self.model_ckpt = model_ckpt
-        self.device = device
 
     def run(self) -> None:
-        """线程主函数：执行降噪计算。"""
+        """线程主函数：逐个执行方法。"""
+        results: dict[str, np.ndarray] = {}
+        n = len(self.methods)
         try:
-            self.progress.emit(10)
-            if self.algorithm == "Wiener Filter":
-                from models.wiener import WienerFilter
-                denoiser = WienerFilter()
-            elif self.algorithm == "Spectral Subtraction":
-                from models.spectral_sub import SpectralSubtraction
-                denoiser = SpectralSubtraction()
-            elif self.algorithm == "Audio Inpainting":
-                from models.audio_inpainter import AudioInpainter
-                inpainter = AudioInpainter()
-                self.progress.emit(30)
-                repaired = inpainter.inpaint(
-                    self.waveform, self.sr, method="spline",
-                    model_ckpt=self.model_ckpt,
-                )
-                self.progress.emit(90)
-                self.finished.emit(repaired.astype(np.float32), self.sr, self.algorithm)
-                self.progress.emit(100)
-                return
-            elif self.algorithm == "U-Net":
-                import torch
-                from models.unet import UNetDenoiser
-                if not self.model_ckpt or not Path(self.model_ckpt).exists():
-                    raise FileNotFoundError(
-                        f"U-Net checkpoint 未找到: {self.model_ckpt}。"
-                        f"请先运行 scripts/train.py 训练模型，"
-                        f"或通过 --ckpt 参数指定 checkpoint 路径。"
-                    )
-                self.progress.emit(30)
-                device = torch.device(self.device if torch.cuda.is_available() else "cpu")
-                model = UNetDenoiser(n_fft=512, hop_length=256).to(device)
-                ckpt = torch.load(self.model_ckpt, map_location=device)
-                model.load_state_dict(ckpt["model_state_dict"])
-                model.eval()
-                self.progress.emit(50)
-                denoised = model.denoise_audio(self.waveform, self.sr)
-                self.progress.emit(90)
-                self.finished.emit(denoised.astype(np.float32), self.sr, self.algorithm)
-                self.progress.emit(100)
-                return
-            else:
-                raise ValueError(f"未知算法: {self.algorithm}")
-            self.progress.emit(50)
-            denoised = denoiser.denoise_audio(self.waveform, self.sr)
-            self.progress.emit(90)
-            self.finished.emit(denoised.astype(np.float32), self.sr, self.algorithm)
-            self.progress.emit(100)
+            for i, method in enumerate(self.methods):
+                self.progress.emit(int(i / n * 100))
+                if self.mode == "denoising":
+                    results[method] = self._run_denoiser(method)
+                else:
+                    results[method] = self._run_inpainter(method)
+                self.progress.emit(int((i + 1) / n * 100))
+            self.finished.emit(results, self.sr)
         except Exception as e:
             self.error.emit(str(e))
 
+    def _run_denoiser(self, method: str) -> np.ndarray:
+        """执行单个降噪方法。
+
+        Args:
+            method: 方法名.
+
+        Returns:
+            降噪后波形.
+        """
+        if method == "Wiener Filter":
+            from models.wiener import WienerFilter
+            return WienerFilter().denoise_audio(self.waveform, self.sr).astype(np.float32)
+        elif method == "Spectral Subtraction":
+            from models.spectral_sub import SpectralSubtraction
+            return SpectralSubtraction().denoise_audio(self.waveform, self.sr).astype(np.float32)
+        else:  # U-Net
+            return self._run_unet_denoise()
+
+    def _run_inpainter(self, method: str) -> np.ndarray:
+        """执行单个修复方法。
+
+        Args:
+            method: 方法名.
+
+        Returns:
+            修复后波形.
+        """
+        from models.audio_inpainter import AudioInpainter
+        inpainter = AudioInpainter()
+        if method == "Spline Interpolation":
+            return inpainter.inpaint(self.waveform, self.sr, method="spline")
+        elif method == "Spectral Inpainting":
+            return inpainter.inpaint(self.waveform, self.sr, method="spectral")
+        else:  # U-Net Inpainting
+            return inpainter.inpaint(self.waveform, self.sr, method="unet", model_ckpt=self.model_ckpt)
+
+    def _run_unet_denoise(self) -> np.ndarray:
+        """U-Net 降噪推理。
+
+        Returns:
+            降噪后波形.
+        """
+        import torch
+        from models.unet import UNetDenoiser
+        if not self.model_ckpt or not Path(self.model_ckpt).exists():
+            raise FileNotFoundError(f"U-Net checkpoint 未找到: {self.model_ckpt}")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = UNetDenoiser(n_fft=512, hop_length=256).to(device)
+        ckpt = torch.load(self.model_ckpt, map_location=device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        model.eval()
+        return model.denoise_audio(self.waveform, self.sr).astype(np.float32)
+
 
 class MainWindow(QMainWindow):
-    """智能音频降噪系统主窗口 (完整版)。
+    """智能音频降噪系统主窗口。
 
-    布局结构:
-      [控制面板: 加载 | 录制 | 算法 | 降噪 | 导出]
-      [录音面板 (可折叠)]
-      [Tab: 波形对比 | 频谱图]
+    双模式 + 多方法对比:
+      [控制面板: 加载/录制 | 模式 | 对比 | 方法 | 执行/导出]
+      [Tab: 波形 | 频谱]
       [Tab: 评估指标 | 噪声诊断]
-      [音频回放控制]
-      [状态栏 + 进度条]
+      [音频回放]
     """
 
     def __init__(self, model_ckpt: str | None = None):
@@ -155,9 +168,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("智能音频降噪系统")
         self.setMinimumSize(1100, 800)
         self._waveform = None
-        self._denoised = None
+        self._results: dict[str, np.ndarray] = {}
         self._sr = None
-        self._current_algo = None
         self._model_ckpt = model_ckpt
         self._setup_ui()
 
@@ -185,19 +197,37 @@ class MainWindow(QMainWindow):
 
         ctrl_layout.addStretch()
 
-        ctrl_layout.addWidget(QLabel("算法:"))
-        self._combo_algo = QComboBox()
-        self._combo_algo.addItems(["Wiener Filter", "Spectral Subtraction", "U-Net", "Audio Inpainting"])
-        ctrl_layout.addWidget(self._combo_algo)
+        # 模式切换
+        ctrl_layout.addWidget(QLabel("模式:"))
+        self._radio_denoise = QRadioButton("降噪")
+        self._radio_denoise.setChecked(True)
+        self._radio_denoise.toggled.connect(self._on_mode_changed)
+        ctrl_layout.addWidget(self._radio_denoise)
 
-        self._btn_denoise = QPushButton("一键降噪")
-        self._btn_denoise.setEnabled(False)
-        self._btn_denoise.clicked.connect(self._on_denoise)
-        self._btn_denoise.setStyleSheet(
+        self._radio_inpaint = QRadioButton("修复")
+        self._radio_inpaint.toggled.connect(self._on_mode_changed)
+        ctrl_layout.addWidget(self._radio_inpaint)
+
+        # 对比开关
+        self._chk_compare = QCheckBox("对比全部方法")
+        self._chk_compare.toggled.connect(self._on_compare_toggled)
+        ctrl_layout.addWidget(self._chk_compare)
+
+        # 方法选择
+        ctrl_layout.addWidget(QLabel("方法:"))
+        self._combo_method = QComboBox()
+        self._combo_method.addItems(DENOISING_METHODS)
+        ctrl_layout.addWidget(self._combo_method)
+
+        # 执行 / 导出
+        self._btn_execute = QPushButton("▶ 执行")
+        self._btn_execute.setEnabled(False)
+        self._btn_execute.clicked.connect(self._on_execute)
+        self._btn_execute.setStyleSheet(
             "QPushButton { background-color: #27AE60; color: white; font-weight: bold; }"
             "QPushButton:disabled { background-color: #ccc; }"
         )
-        ctrl_layout.addWidget(self._btn_denoise)
+        ctrl_layout.addWidget(self._btn_execute)
 
         self._btn_export = QPushButton("导出")
         self._btn_export.setEnabled(False)
@@ -213,26 +243,32 @@ class MainWindow(QMainWindow):
         self._recorder.setVisible(False)
         main_layout.addWidget(self._recorder)
 
+        # ========== 结果方法切换器 (对比模式可见) ==========
+        result_row = QHBoxLayout()
+        self._lbl_result_selector = QLabel("对比结果 — 查看方法:")
+        self._lbl_result_selector.setVisible(False)
+        result_row.addWidget(self._lbl_result_selector)
+        self._combo_result = QComboBox()
+        self._combo_result.setVisible(False)
+        self._combo_result.currentIndexChanged.connect(self._on_result_method_changed)
+        result_row.addWidget(self._combo_result)
+        result_row.addStretch()
+        main_layout.addLayout(result_row)
+
         # ========== 可视化 Tab ==========
         viz_tab = QTabWidget()
-
         self._waveform_view = WaveformView()
         viz_tab.addTab(self._waveform_view, "时域波形")
-
         self._spectrogram_view = SpectrogramView()
         viz_tab.addTab(self._spectrogram_view, "频谱图")
-
         main_layout.addWidget(viz_tab, stretch=3)
 
         # ========== 评估与诊断 Tab ==========
         bottom_tab = QTabWidget()
-
         self._metrics_panel = MetricsPanel()
         bottom_tab.addTab(self._metrics_panel, "评估指标")
-
         self._diagnosis_panel = DiagnosisPanel()
         bottom_tab.addTab(self._diagnosis_panel, "噪声诊断")
-
         main_layout.addWidget(bottom_tab, stretch=2)
 
         # ========== 音频回放 ==========
@@ -243,185 +279,203 @@ class MainWindow(QMainWindow):
         self._progress = QProgressBar()
         self._progress.setVisible(False)
         main_layout.addWidget(self._progress)
-
         self._status = QLabel("就绪 — 请加载音频文件或使用麦克风录制")
         main_layout.addWidget(self._status)
 
-    # ---------- 事件处理 ----------
+    # ---------- 模式/对比切换 ----------
+
+    def _on_mode_changed(self) -> None:
+        """模式切换：更新方法下拉内容。"""
+        methods = INPAINTING_METHODS if self._radio_inpaint.isChecked() else DENOISING_METHODS
+        self._combo_method.clear()
+        self._combo_method.addItems(methods)
+
+    def _on_compare_toggled(self, checked: bool) -> None:
+        """对比开关：勾选时禁用方法下拉。"""
+        self._combo_method.setEnabled(not checked)
+
+    def _get_selected_methods(self) -> list[str]:
+        """获取当前应执行的方法列表。
+
+        Returns:
+            方法名列表.
+        """
+        if self._chk_compare.isChecked():
+            return INPAINTING_METHODS if self._radio_inpaint.isChecked() else DENOISING_METHODS
+        return [self._combo_method.currentText()]
+
+    # ---------- 文件/录制 ----------
 
     def _on_load(self) -> None:
-        """从文件加载音频，关闭录音面板。"""
+        """加载音频文件。"""
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择带噪音频", "",
-            "Audio Files (*.wav *.mp3 *.flac *.m4a *.aac);;All Files (*)"
+            self, "选择音频", "",
+            "Audio Files (*.wav *.mp3 *.flac *.m4a *.aac);;All Files (*)",
         )
         if not path:
             return
         try:
-            # 关闭录音面板
             self._recorder.setVisible(False)
             self._btn_record.setEnabled(True)
-
             self._waveform, self._sr = load_audio(path)
             self._lbl_source.setText(f"文件: {os.path.basename(path)}")
             self._lbl_source.setStyleSheet("color: #2980B9;")
-            self._btn_denoise.setEnabled(True)
+            self._btn_execute.setEnabled(True)
+            self._results = {}
             dur = len(self._waveform) / self._sr
-            self._status.setText(
-                f"已加载: {os.path.basename(path)} ({dur:.1f}s, {self._sr}Hz)"
-            )
+            self._status.setText(f"已加载: {os.path.basename(path)} ({dur:.1f}s, {self._sr}Hz)")
             self._clear_all_panels()
-            logger.info(f"加载音频: {path}")
         except Exception as e:
             self._status.setText(f"加载失败: {e}")
 
     def _on_record_toggle(self) -> None:
-        """切换录音面板的显示/隐藏。"""
+        """切换录音面板。"""
         if self._recorder.isVisible():
             self._recorder.setVisible(False)
             self._btn_record.setText("录制音频")
-            self._status.setText("就绪")
         else:
             self._recorder.setVisible(True)
             self._btn_record.setText("收起录音")
-            self._status.setText("正在使用录音面板 — 点击 [开始录音] 采集音频")
 
     def _on_recording_finished(self, waveform: np.ndarray, sr: int) -> None:
-        """录音完成回调：存储波形，启用降噪，更新面板。
-
-        Args:
-            waveform: 录制完成的音频波形.
-            sr: 采样率.
-        """
+        """录音完成。"""
         self._waveform = waveform
         self._sr = sr
         dur = len(waveform) / sr
         self._lbl_source.setText(f"录音: {dur:.1f}s")
         self._lbl_source.setStyleSheet("color: #E74C3C;")
-        self._btn_denoise.setEnabled(True)
+        self._btn_execute.setEnabled(True)
+        self._results = {}
         self._clear_all_panels()
-
-        # 在波形预览中显示原始录音
         self._waveform_view.set_data(waveform, waveform, sr=sr)
-
-        self._status.setText(
-            f"录制完成 ({dur:.1f}s, {sr}Hz) — 选择算法后点击 [一键降噪]"
-        )
-        logger.info(f"录音完成: {dur:.1f}s")
+        self._status.setText(f"录制完成 ({dur:.1f}s) — 点击 ▶ 执行")
 
     def _on_recording_error(self, msg: str) -> None:
-        """录音出错回调。
-
-        Args:
-            msg: 错误消息.
-        """
+        """录音出错。"""
         self._status.setText(f"录音错误: {msg}")
-        logger.error(f"录音错误: {msg}")
 
-    def _on_denoise(self) -> None:
-        """启动后台降噪线程。"""
+    # ---------- 执行 ----------
+
+    def _on_execute(self) -> None:
+        """启动后台批量执行。"""
         if self._waveform is None:
             return
-        self._current_algo = self._combo_algo.currentText()
-        # 降噪时隐藏录音面板
+        methods = self._get_selected_methods()
+        mode = "inpainting" if self._radio_inpaint.isChecked() else "denoising"
+
         self._recorder.setVisible(False)
         self._btn_record.setText("录制音频")
         self._btn_record.setEnabled(True)
-
-        self._btn_denoise.setEnabled(False)
+        self._btn_execute.setEnabled(False)
         self._btn_load.setEnabled(False)
         self._btn_export.setEnabled(False)
         self._progress.setVisible(True)
         self._progress.setValue(0)
-        self._status.setText(f"正在执行 {self._current_algo} ...")
+        self._status.setText(f"正在执行 {mode} ({', '.join(methods)}) ...")
 
-        self._worker = DenoiseWorker(
-            self._waveform, self._sr, self._current_algo,
-            model_ckpt=self._model_ckpt,
+        self._worker = BatchWorker(
+            self._waveform, self._sr, methods, mode, model_ckpt=self._model_ckpt,
         )
         self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(self._on_finished)
+        self._worker.finished.connect(self._on_batch_finished)
         self._worker.error.connect(self._on_error)
         self._worker.start()
 
     def _on_progress(self, val: int) -> None:
-        """更新进度条。
-
-        Args:
-            val: 进度百分比 (0~100).
-        """
+        """更新进度条。"""
         self._progress.setValue(val)
 
-    def _on_finished(
-        self, denoised: np.ndarray, sr: int, algorithm: str
-    ) -> None:
-        """降噪完成：更新全部面板。
+    def _on_batch_finished(self, results: dict[str, np.ndarray], sr: int) -> None:
+        """批量执行完成：更新全部面板。
 
         Args:
-            denoised: 降噪后波形.
+            results: {method_name: waveform}.
             sr: 采样率.
-            algorithm: 使用的算法名称.
         """
-        self._denoised = denoised
-        self._btn_denoise.setEnabled(True)
+        self._results = results
+        self._btn_execute.setEnabled(True)
         self._btn_load.setEnabled(True)
         self._btn_export.setEnabled(True)
         self._progress.setVisible(False)
 
-        min_len = min(len(self._waveform), len(denoised))
-        noisy_seg = self._waveform[:min_len]
-        denoised_seg = denoised[:min_len]
+        method_names = list(results.keys())
+        self._method_names = method_names
+        min_len = min(len(self._waveform), min(len(w) for w in results.values()))
+        self._noisy_seg = self._waveform[:min_len]
+        self._result_sr = sr
+        is_compare = len(method_names) > 1
 
-        # 1. 波形图
-        self._waveform_view.set_data(noisy_seg, denoised_seg, sr=sr)
+        # 预计算所有方法指标
+        self._all_metrics = {}
+        for name in method_names:
+            m = compute_all_metrics(self._noisy_seg, results[name][:min_len], sr)
+            self._all_metrics[name] = {k: v for k, v in m.items() if not np.isnan(v)}
 
-        # 2. 频谱图
-        self._spectrogram_view.set_data(noisy_seg, denoised_seg, sr=sr)
+        # 结果方法切换器 (对比模式显示)
+        self._lbl_result_selector.setVisible(is_compare)
+        self._combo_result.setVisible(is_compare)
+        if is_compare:
+            self._combo_result.blockSignals(True)
+            self._combo_result.clear()
+            self._combo_result.addItems(method_names)
+            self._combo_result.blockSignals(False)
 
-        # 3. 评估指标
-        metrics = compute_all_metrics(noisy_seg, denoised_seg, sr)
-        self._metrics_panel.set_metrics(metrics)
+        # 指标表格
+        if is_compare:
+            self._metrics_panel.set_comparison(self._all_metrics)
+        else:
+            self._metrics_panel.set_metrics(self._all_metrics[method_names[0]])
 
-        # 4. 噪声诊断
-        noise_type, noise_label, details, profile = diagnose_noise(
-            noisy_seg, sr
-        )
-        self._diagnosis_panel.set_diagnosis(
-            noise_type, noise_label, details, profile
-        )
+        # 噪声诊断
+        if not is_compare and self._radio_denoise.isChecked():
+            noise_type, noise_label, details, profile = diagnose_noise(self._noisy_seg, sr)
+            self._diagnosis_panel.set_diagnosis(noise_type, noise_label, details, profile)
 
-        # 5. 音频播放器
-        self._audio_player.set_audio(noisy_seg, denoised_seg, clean=None, sr=sr)
+        # 默认显示第一个方法
+        self._show_result_method(method_names[0])
+        self._status.setText(f"执行完成 ({len(method_names)} 个方法) | 就绪")
 
-        self._status.setText(
-            f"降噪完成 ({algorithm}) | 噪声类型: {noise_label} | 就绪"
-        )
-        logger.info(f"降噪完成: {algorithm}, noise={noise_type}")
+    def _on_result_method_changed(self, idx: int) -> None:
+        """对比模式下切换查看的方法。"""
+        if idx < 0 or not hasattr(self, '_method_names'):
+            return
+        self._show_result_method(self._method_names[idx])
 
-    def _on_error(self, msg: str) -> None:
-        """降噪出错回调。
+    def _show_result_method(self, name: str) -> None:
+        """将波形/频谱/播放器切换到指定方法。
+
+        波形图只展示当前选中方法 + 原始带噪信号，不混杂其他方法。
 
         Args:
-            msg: 错误消息.
+            name: 方法名.
         """
-        self._btn_denoise.setEnabled(True)
+        wf = self._results[name][:len(self._noisy_seg)]
+        sr = self._result_sr
+        self._waveform_view.set_data(self._noisy_seg, wf, sr=sr)
+        self._spectrogram_view.set_data(self._noisy_seg, wf, sr=sr)
+        self._audio_player.set_audio(self._noisy_seg, wf, clean=None, sr=sr)
+
+    def _on_error(self, msg: str) -> None:
+        """执行出错。"""
+        self._btn_execute.setEnabled(True)
         self._btn_load.setEnabled(True)
         self._btn_export.setEnabled(True)
         self._progress.setVisible(False)
         self._status.setText(f"错误: {msg}")
-        logger.error(f"降噪失败: {msg}")
 
     def _on_export(self) -> None:
-        """导出降噪后的音频文件。"""
-        if self._denoised is None:
+        """导出结果音频。"""
+        if not self._results:
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "导出降噪音频", "denoised.wav", "WAV Files (*.wav)"
-        )
-        if not path:
-            return
-        sf.write(path, self._denoised, self._sr)
-        self._status.setText(f"已导出: {os.path.basename(path)}")
+        for name, wf in self._results.items():
+            safe_name = name.lower().replace(" ", "_")
+            path, _ = QFileDialog.getSaveFileName(
+                self, f"导出 - {name}", f"{safe_name}.wav", "WAV Files (*.wav)",
+            )
+            if not path:
+                continue
+            sf.write(path, wf, self._sr)
+        self._status.setText("导出完成")
 
     def _clear_all_panels(self) -> None:
         """清空所有展示面板。"""
@@ -432,18 +486,13 @@ class MainWindow(QMainWindow):
 
 
 def main():
-    """启动 GUI 应用程序。"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
-    # 解析命令行参数 (--ckpt 用于 U-Net)
+    """启动 GUI。"""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     ckpt = None
     for i, arg in enumerate(sys.argv):
         if arg == "--ckpt" and i + 1 < len(sys.argv):
             ckpt = sys.argv[i + 1]
             break
-
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     window = MainWindow(model_ckpt=ckpt)

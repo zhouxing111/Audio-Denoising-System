@@ -224,18 +224,23 @@ python ui/main_window.py --ckpt checkpoints/unet/best_model.pt
 
 GUI 操作流程：
 
-**模式 A — 文件加载**：
-1. 点击 **加载音频** → 选择本地 `.wav`/`.mp3`/`.flac`/`.m4a`/`.aac` 文件
-2. 下拉选择算法 (Wiener Filter / Spectral Subtraction / U-Net / Audio Inpainting)
-3. 点击 **一键降噪/修复** → 后台线程异步执行
-4. 查看结果：波形对比 / 频谱图 / 评估指标 / 噪声诊断 / 音频回放
+**模式 A — 文件加载 + 降噪对比**：
+1. 点击 **加载音频** → 选择文件 (支持 `.wav/.mp3/.flac/.m4a/.aac`)
+2. 模式选 **降噪**，勾选 **对比全部方法**
+3. 点击 **▶ 执行** → 串行跑 Wiener + SpectralSub + U-Net
+4. 查看结果：多色波形叠加 / 对比指标表格 / 频谱图 / 噪声诊断
 
-**模式 B — 在线录音**：
-1. 点击 **录制音频** → 展开录音面板
-2. 点击 **开始录音** → 实时波形预览 (最长 30s 自动停止)
-3. 点击 **停止录音** → 录制完成，波形存入系统
-4. 选择算法 → 点击 **一键降噪** → 全部展示面板同步更新
-5. 使用音频播放器切换试听带噪/降噪结果
+**模式 B — 文件加载 + 修复对比**：
+1. 加载损坏音频（或先用降噪模式处理正常音频）
+2. 模式选 **修复**，勾选 **对比全部方法**
+3. 点击 **▶ 执行** → 串行跑 Spline + Spectral + U-Net 修复
+4. 指标表格直接对比三种修复策略
+
+**模式 C — 在线录音**：
+1. 点击 **录制音频** → 开始录音 → 停止
+2. 选择模式和算法 → 点击 **▶ 执行**
+
+**单选模式**：取消勾选"对比全部方法"，下拉选择具体方法，只跑一种。
 
 ## 项目目录结构
 
@@ -339,7 +344,7 @@ audio-denoising/
 
 | 文件 | 功能 |
 |------|------|
-| `main_window.py` | `MainWindow` — 整合全部组件的主窗口。控制面板提供加载/录制/算法选择/降噪/导出。`DenoiseWorker` 支持 Wiener/SpectralSub/U-Net/AudioInpainting 四种算法。启动参数 `--ckpt` 指定 U-Net 权重路径 |
+| `main_window.py` | `MainWindow` — 双模式工作流。模式切换(降噪/修复) + 对比全部方法开关 + `BatchWorker` 批量执行。支持单选一种方法或一键对比全部。启动参数 `--ckpt` 指定 U-Net 权重路径 |
 | `audio_player.py` | `AudioPlayer` — 带噪/降噪/纯净三段音源切换，播放/暂停/停止，进度条 seek，`sounddevice.OutputStream` 流式回放 |
 | `audio_recorder.py` | `AudioRecorder` — `sounddevice.InputStream` 麦克风采集，`RingBuffer` 线程安全缓冲，QTimer 50ms 实时波形预览，最长 30s 自动停止 |
 | `widgets/waveform_view.py` | `WaveformView` — pyqtgraph 双通道波形对比 (Noisy 红 / Denoised 绿 / Clean 蓝虚线) |

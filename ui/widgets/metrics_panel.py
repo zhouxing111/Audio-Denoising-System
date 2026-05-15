@@ -113,6 +113,40 @@ class MetricsPanel(QWidget):
             else:
                 item.setForeground(Qt.darkYellow)
 
+    def set_comparison(self, all_metrics: dict[str, dict[str, float]]) -> None:
+        """对比模式：行=方法，列=指标。
+
+        Args:
+            all_metrics: {"Wiener Filter": {"SNR": 12.3, "PESQ": 3.1}, ...}.
+        """
+        method_names = list(all_metrics.keys())
+        if not method_names:
+            return
+        # 收集所有指标名
+        metric_names = list(next(iter(all_metrics.values())).keys())
+        # 表格: 行=方法, 列=指标
+        self._table.setRowCount(len(method_names))
+        self._table.setColumnCount(len(metric_names) + 1)
+        self._table.setHorizontalHeaderLabels(["Method"] + metric_names)
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        for j in range(1, len(metric_names) + 1):
+            self._table.horizontalHeader().setSectionResizeMode(j, QHeaderView.Stretch)
+
+        for i, method in enumerate(method_names):
+            name_item = QTableWidgetItem(method)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            self._table.setItem(i, 0, name_item)
+            for j, mname in enumerate(metric_names):
+                val = all_metrics[method].get(mname, float("nan"))
+                if not np.isnan(val):
+                    val_item = QTableWidgetItem(f"{val:.4f}")
+                    val_item.setTextAlignment(Qt.AlignCenter)
+                    self._apply_color(val_item, mname, val)
+                else:
+                    val_item = QTableWidgetItem("N/A")
+                val_item.setFlags(val_item.flags() & ~Qt.ItemIsEditable)
+                self._table.setItem(i, j + 1, val_item)
+
     def clear(self) -> None:
         """清空指标表格。"""
         self._table.setRowCount(0)
