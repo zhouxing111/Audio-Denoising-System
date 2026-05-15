@@ -80,18 +80,39 @@ def parse_args() -> argparse.Namespace:
         default=["spline", "spectral", "unet"],
         help="修复方法列表 (仅 --mode inpainting)",
     )
+    parser.add_argument(
+        "--split_json", type=str, default=None,
+        help="测试集 split JSON 路径 (如 datasets/splits/test_clean.json)，确保只评估未见过的说话人",
+    )
     return parser.parse_args()
 
 
-def collect_files(root: Path) -> list[Path]:
-    """递归扫描目录收集所有音频文件。
+def collect_files(root: Path, split_json: str | None = None) -> list[Path]:
+    """递归扫描目录收集音频文件，可选按 test split 过滤。
 
     Args:
         root: 扫描根目录.
+        split_json: test split JSON 路径 (如 test_clean.json),
+                    提供时只返回 split 中列出的文件，保证不包含训练集说话人.
 
     Returns:
         音频文件路径列表.
     """
+    if split_json and Path(split_json).exists():
+        import json
+        with open(split_json, "r") as f:
+            allowed = set(json.load(f))
+        # allowed 格式: "speaker_19/19-198-0000.wav"
+        files = []
+        for rel in allowed:
+            p = root / rel
+            if p.exists():
+                files.append(p)
+        logging.getLogger(__name__).info(
+            f"使用 test split: {len(files)}/{len(allowed)} 文件来自 {split_json}"
+        )
+        return sorted(files)
+
     exts = {".wav", ".flac", ".mp3", ".m4a", ".aac"}
     return sorted([p for p in root.rglob("*") if p.suffix.lower() in exts])
 
@@ -104,6 +125,7 @@ def generate_test_pairs(
     snr_list: list[float],
     duration: float = 4.0,
     target_sr: int = 16000,
+    split_json: str | None = None,
 ) -> None:
     """从纯净语音和噪声源动态生成测试对。
 
@@ -129,10 +151,10 @@ def generate_test_pairs(
     noisy_dir.mkdir(parents=True, exist_ok=True)
     clean_dir.mkdir(parents=True, exist_ok=True)
 
-    clean_files = collect_files(clean_source)
+    clean_files = collect_files(clean_source, split_json=split_json)
     noise_files = collect_files(noise_source)
     if not clean_files:
-        raise FileNotFoundError(f"未在 {clean_source} 找到音频文件")
+        raise FileNotFoundError(f"未在 {clean_source} 找到音频文件 (split_json={split_json})")
     if not noise_files:
         raise FileNotFoundError(f"未在 {noise_source} 找到音频文件")
 
@@ -188,9 +210,9 @@ def run_inpainting_eval(args) -> None:
 
     from models.audio_inpainter import AudioInpainter
 
-    clean_files = collect_files(Path(args.clean_source))
+    clean_files = collect_files(Path(args.clean_source), split_json=args.split_json)
     if not clean_files:
-        logger.error(f"未在 {args.clean_source} 找到音频文件")
+        logger.error(f"未在 {args.clean_source} 找到音频文件 (split_json={args.split_json})")
         return
 
     out_dir = Path(args.test_output_dir) / "inpainting"
@@ -270,6 +292,7 @@ def main() -> None:
         generate_test_pairs(
             Path(args.clean_source), Path(args.noise_source),
             Path(args.test_output_dir), args.num_test, snr_list,
+            split_json=args.split_json,
         )
         # 生成后切换到模式 A 路径
         noisy_dir = Path(args.test_output_dir) / "noisy"

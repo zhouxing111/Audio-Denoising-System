@@ -165,7 +165,7 @@ python scripts/inference.py damaged.wav --algo inpaint --inpaint_method unet --c
 自动生成测试对并评估（无需预先准备测试文件）：
 
 ```bash
-python scripts/evaluate.py --clean_source datasets/processed/clean --noise_source datasets/processed/noise --algorithms wiener spectral_sub unet --ckpt checkpoints/unet/best_model.pt --num_test 30 --output evaluation_report.csv
+python scripts/evaluate.py --clean_source datasets/processed/clean --noise_source datasets/processed/noise --split_json datasets/splits/test_clean.json --algorithms wiener spectral_sub unet --ckpt checkpoints/unet/best_model.pt --num_test 30 --output evaluation_report.csv
 ```
 
 如果已有测试文件，也可直接指定目录：
@@ -176,7 +176,7 @@ python scripts/evaluate.py --noisy_dir datasets/test_noisy --clean_dir datasets/
 
 音频修复批量评估（自动生成损坏 → 修复 → 对比）：
 ```bash
-python scripts/evaluate.py --mode inpainting --clean_source datasets/processed/clean --methods spline spectral unet --ckpt checkpoints/unet/best_model.pt --num_test 20 --output evaluation_report_inpainting.csv
+python scripts/evaluate.py --mode inpainting --clean_source datasets/processed/clean --split_json datasets/splits/test_clean.json --methods spline spectral unet --ckpt checkpoints/unet/best_model.pt --num_test 20 --output evaluation_report_inpainting.csv
 ```
 
 ### 3. 训练 U-Net 模型
