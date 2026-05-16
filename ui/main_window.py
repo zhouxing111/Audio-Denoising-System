@@ -49,7 +49,7 @@ from ui.audio_recorder import AudioRecorder
 logger = logging.getLogger(__name__)
 
 # 模式 → 方法列表
-DENOISING_METHODS = ["Wiener Filter", "Spectral Subtraction", "U-Net"]
+DENOISING_METHODS = ["Wiener Filter", "Spectral Subtraction", "U-Net", "Hybrid (U-Net + Wiener)"]
 INPAINTING_METHODS = ["Spline Interpolation", "Spectral Inpainting", "U-Net Inpainting"]
 
 
@@ -114,6 +114,10 @@ class BatchWorker(QThread):
         elif method == "Spectral Subtraction":
             from models.spectral_sub import SpectralSubtraction
             return SpectralSubtraction().denoise_audio(self.waveform, self.sr).astype(np.float32)
+        elif method == "Hybrid (U-Net + Wiener)":
+            from models.hybrid import HybridDenoiser
+            h = HybridDenoiser()
+            return h.denoise_audio(self.waveform, self.sr, model_ckpt=self.model_ckpt).astype(np.float32)
         else:  # U-Net
             return self._run_unet_denoise()
 
@@ -279,7 +283,8 @@ class MainWindow(QMainWindow):
         self._progress = QProgressBar()
         self._progress.setVisible(False)
         main_layout.addWidget(self._progress)
-        self._status = QLabel("就绪 — 请加载音频文件或使用麦克风录制")
+        ckpt_info = f" | U-Net: {self._model_ckpt}" if self._model_ckpt else ""
+        self._status = QLabel(f"就绪 — 请加载音频文件或使用麦克风录制{ckpt_info}")
         main_layout.addWidget(self._status)
 
     # ---------- 模式/对比切换 ----------
@@ -388,6 +393,8 @@ class MainWindow(QMainWindow):
     def _on_batch_finished(self, results: dict[str, np.ndarray], sr: int) -> None:
         """批量执行完成：更新全部面板。
 
+        对比模式下自动注入"Noisy (Original)"作为基准行。
+
         Args:
             results: {method_name: waveform}.
             sr: 采样率.
@@ -399,25 +406,34 @@ class MainWindow(QMainWindow):
         self._progress.setVisible(False)
 
         method_names = list(results.keys())
-        self._method_names = method_names
         min_len = min(len(self._waveform), min(len(w) for w in results.values()))
         self._noisy_seg = self._waveform[:min_len]
         self._result_sr = sr
         is_compare = len(method_names) > 1
 
-        # 预计算所有方法指标
+        # 对比模式下注入带噪原始音频作为基准行
+        if is_compare:
+            results["Noisy (Original)"] = self._noisy_seg.copy()
+            all_names = ["Noisy (Original)"] + method_names
+        else:
+            all_names = method_names
+
+        self._method_names = all_names
+        self._results = results
+
+        # 预计算所有指标
         self._all_metrics = {}
-        for name in method_names:
+        for name in all_names:
             m = compute_all_metrics(self._noisy_seg, results[name][:min_len], sr)
             self._all_metrics[name] = {k: v for k, v in m.items() if not np.isnan(v)}
 
-        # 结果方法切换器 (对比模式显示)
+        # 结果方法切换器
         self._lbl_result_selector.setVisible(is_compare)
         self._combo_result.setVisible(is_compare)
         if is_compare:
             self._combo_result.blockSignals(True)
             self._combo_result.clear()
-            self._combo_result.addItems(method_names)
+            self._combo_result.addItems(all_names)
             self._combo_result.blockSignals(False)
 
         # 指标表格
@@ -432,7 +448,7 @@ class MainWindow(QMainWindow):
             self._diagnosis_panel.set_diagnosis(noise_type, noise_label, details, profile)
 
         # 默认显示第一个方法
-        self._show_result_method(method_names[0])
+        self._show_result_method(all_names[0])
         self._status.setText(f"执行完成 ({len(method_names)} 个方法) | 就绪")
 
     def _on_result_method_changed(self, idx: int) -> None:

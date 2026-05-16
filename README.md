@@ -5,14 +5,14 @@
 ## 核心功能
 
 - **双模式音源输入**：支持 WAV/FLAC/MP3/M4A 文件加载和麦克风在线录音（最长 30s，实时波形预览）
-- **多算法支持**：频域维纳滤波 / 谱减法 / U-Net 深度学习模型（训练完可全链路调用）/ 音频修复（时域插值 / 频域重建 / U-Net 迭代修复）
+- **多算法支持**：频域维纳滤波 / 谱减法 / U-Net / Hybrid (U-Net+Wiener 混合) / 音频修复（时域插值 / 频域重建 / U-Net 迭代修复）
 - **离线预混合加速**：训练前一次性生成 .npy 训练对，训练速度提升 10~20 倍
 - **实时可视化**：时域波形对比、STFT 频谱图、梅尔谱，左右分屏同步展示
 - **全面评估体系**：SNR / SegSNR / SI-SDR / STOI / PESQ / LSD / DNSMOS 共 7 项指标，得分板彩色编码
 - **噪声类型诊断**：VAD 分离语音帧 → 频谱分析 → 自动识别白噪声/低频嗡嗡/背景人声/高频电子噪声
 - **动态在线混合**：训练阶段实时合成带噪语音（随机 SNR∈[-5,+15]dB），无需预生成海量带噪数据集
 - **音频回放**：带噪/降噪/纯净三段切换播放，支持进度拖拽
-- **批量评估报告**：一键生成多算法的 CSV 对比报告
+- **批量评估报告**：一键生成多算法的 CSV 对比报告，支持降噪和修复两种评估模式
 
 ## 系统架构
 
@@ -31,7 +31,8 @@
 │  ├── WienerFilter        (频域维纳滤波, 传统基准)   │
 │  ├── SpectralSubtraction (谱减法, 传统对比)        │
 │  ├── UNetDenoiser        (U-Net IRM 掩膜, 深度学习) │
-│  └── AudioInpainter      (插值修复, 待实现)        │
+│  ├── HybridDenoiser      (U-Net+Wiener 混合)       │
+│  └── AudioInpainter      (时域/频域/U-Net 修复)     │
 └──────┬──────────────────────────┬────────────────┘
        │ 训练靠                    │ 评估靠
 ┌──────▼──────────┐    ┌──────────▼────────────────┐
@@ -71,174 +72,184 @@ pip install -r requirements.txt
 
 ## 数据集准备
 
-### 1. 下载原始数据集
+### 1. 训练数据（基础模型）
 
-| 类型 | 数据集 | 大小 | 获取方式 |
+| 类型 | 数据集 | 大小 | 下载链接 |
 |------|--------|------|----------|
-| 纯净语音 | LibriSpeech train-clean-100 | ~6GB | https://www.openslr.org/12 |
-| 环境噪声 | DEMAND | ~500MB | https://zenodo.org/record/1227121 |
+| 纯净语音 | **LibriSpeech train-clean-100** | ~6GB | https://www.openslr.org/12 |
+| 环境噪声 | **DEMAND** | ~500MB | https://zenodo.org/record/1227121 |
 
-### 2. 放入原始数据
-
-将下载的数据集原封不动放入 `datasets/raw/` 目录：
+下载后请解压放入 `datasets/raw/`：
 
 ```
 datasets/raw/
 ├── LibriSpeech/
-│   └── train-clean-100/      # 解压后整个文件夹放入
-│       ├── 19/
-│       ├── 26/
-│       └── ...
+│   └── train-clean-100/
+│       ├── 19/  198/  19-198-0000.flac ...
+│       └── 26/  ...
 └── DEMAND/
-    ├── ch01/                  # 解压后 18 个通道文件夹放入
-    ├── ch02/
-    └── ...
+    ├── ch01/  ch02/  ...  ch18/
 ```
 
-### 3. 运行自动化预处理
+### 2. 微调数据（跨域泛化）
+
+| 类型 | 推荐来源 | 数量 | 获取方式 | 放入目录 |
+|------|----------|------|----------|----------|
+| 中文语音 | **ST-CMDS**(~8GB,任选其中部分音频) | 30~50 条, 5~15s/条 | [https://www.openslr.org/38/](https://www.openslr.org/38/) | `datasets/finetune/raw/zh/` |
+| 英文对话 | **LibriSpeech test-clean** | ~300 条, 自动抽取 | 已有数据，脚本自动从 test-clean 抽 10 个 speaker | `en/` 留空即可 |
+| 歌曲人声 | **MIR-1K** (~1GB) | 10~20 条片段 | [http://mirlab.org/dataset/public/MIR-1K.zip](http://mirlab.org/dataset/public/MIR-1K.zip) | `datasets/finetune/raw/sing/` |
+| 多样化噪声 | **ESC-50** (200MB) | 2000 条 | `git clone https://github.com/karolpiczak/ESC-50` | `datasets/finetune/raw/noise/` |
+
+#### 数据集介绍
+
+**LibriSpeech (train-clean-100)** \
+是源自 LibriVox 项目的大规模有声读物英文清晰语音语料库，在自动语音识别（ASR）及语音增强（SE）领域被广泛应用。该子集包含由 251 名朗读者（125 名男性，126 名女性）录制的约 100 小时高质量、低噪声英文朗读音频。所有音频文件均采用 16 kHz 采样率、16-bit 量化精度的无损 FLAC 格式存储，并提供了与之严格对齐的文本标注。因其较高的信噪比与发音标准度，该子集在智能音频处理算法中充当理想的干净语音基准源。
+
+**DEMAND (Diverse Environments Multi-channel Acoustic Noise Database)** \
+是广泛用于评估稳健语音增强及盲源分离算法的多通道环境噪声数据库。该数据集涵盖多种真实生活场景下的三维空间噪声，细分为室内（如办公室、餐厅）、室外（如广场、街区）以及交通工具（如地铁、汽车）等 6 大类共 18 种特定环境。录音采用 16 通道正方体麦克风阵列同步采集，提供 48 kHz 高采样率、24-bit 无损 WAV 格式的原始音轨，能够为深度学习降噪模型提供丰富且逼真的空间声学特征与非平稳噪声分布。
+
+**ST-CMDS (Surfingtech Chinese Mandarin Corpus)** \
+是由上海希尔贝壳（Surfingtech）开源的轻量级中文普通话语音数据集，常用于语音识别及面向中文场景的语音降噪开发。该语料库由 855 名发音标准的中文北方方言区发言人（涵盖不同年龄段与性别比例）在相对安静的室内环境下录制，共包含 102,600 条短语音频。每段音频时长约 3~5 秒，采用单通道、16 kHz 采样率及 16-bit 线性 PCM（WAV）格式存储，并配有对应汉字文本转写，是快速验证深度学习模型对中文语音泛化性能的标准基准之一。
+
+**MIR-1K (Music Information Retrieval 1K)** \
+是专为音高追踪、歌声提取及音乐信息检索任务设计的开放式多媒体数据集。该数据集由 19 名业余歌手（11 名女性，8 名男性）演唱的 1,000 段中文流行歌曲片段组成，总时长约 133 分钟。其核心声学特征在于采用双声道格式：左声道独立录制纯伴奏音乐，右声道独立录制干净的纯人声歌唱。音频采样率为 16 kHz，量化位深为 16-bit，为评估音频源分离与歌声降噪算法提供了天然且精确的成分标签。
+
+**ESC-50 (Environmental Sound Classification)** \
+是环境声分类与计算音频场景分析领域最核心的基准数据集之一。该数据集由 2,000 段经过严格筛选的短环境音组成，均匀划分为 50 个功能性类别（如动物声、自然环境音、人类非言语声音、家庭内部噪声以及城市环境噪声），每类包含 40 个样本。所有音频片段时长固定为 5 秒，采用单声道、44.1 kHz 采样率及 16-bit WAV 格式。该数据集的标准构造使得研究人员能够以统一的 5 折交叉验证协议科学评估深度神经网络对复杂多变噪声的分类与表征能力。
+
+### 3. 运行预处理
 
 ```bash
+# 训练数据预处理
 python scripts/prepare_data.py --raw_dir datasets/raw --output_dir datasets/processed --val_ratio 0.1 --test_ratio 0.1 --chunk_duration 10.0
+
+# 微调数据预处理 (en/ 留空时自动从 test-clean 抽取 300 条英文)
+python scripts/prepare_finetune_data.py --raw_dir datasets/finetune/raw --output_dir datasets/finetune/processed --librispeech_test datasets/raw/LibriSpeech/test-clean
 ```
 
-脚本自动完成：
-- 扫描 LibriSpeech 全部 `.flac` 文件 → 转换为 16kHz 单声道 WAV
-- 扫描 DEMAND 全部噪声 `.wav` → 重采样至 16kHz，**自动切分为 10 秒片段**（避免训练时加载 5 分钟整文件）
-- 按 speaker_id / 噪声类型组织输出目录
-- 生成说话人级 train/val/test 分割列表（同一个说话人不跨集合，防泄露）
+脚本自动：扫描原始文件 → 统一 16kHz 单声道 → DEMAND 切 10s 分块 → 按 speaker/类型组织 → 生成 train/val/test split。
 
-### 4. 输出结构
-
-```
-datasets/
-├── raw/                      # 原始数据集 (用户放入)
-├── processed/                # 预处理后 (脚本自动生成)
-│   ├── clean/                # 16kHz WAV, 按 speaker_id 分目录
-│   │   ├── speaker_19/
-│   │   └── ...
-│   └── noise/                # 16kHz WAV, 按噪声类型分目录
-│       ├── kitchen/
-│       ├── traffic/
-│       └── ...               # 共 18 种噪声场景
-├── premixed/                  # 离线预混合 .npy 文件 (premix_dataset.py 生成)
-└── splits/                   # 分割列表 JSON
-    ├── train_clean.json
-    ├── val_clean.json
-    └── test_clean.json
-```
-
-脚本执行完毕后，终端会输出下一步命令，直接复制运行即可。
-
-### 4. 离线预混合（加速训练，推荐）
+### 4. 离线预混合（加速训练）
 
 ```bash
 python scripts/premix_dataset.py --clean_dir datasets/processed/clean --noise_dir datasets/processed/noise --output_dir datasets/premixed --num_pairs 20000
 ```
 
-生成 20000 对预混合 .npy 文件，训练时加载速度提升 10~20 倍。预混合数据约占用 5GB 磁盘空间。
+生成 20000 对 `.npy` 训练对，训练 I/O 提升 10~20 倍。约占用 5GB 磁盘。
+
+### 5. 输出结构
+
+```
+datasets/
+├── raw/                      # 原始数据集 (用户放入)
+├── processed/                # 训练用预处理后 (脚本生成)
+│   ├── clean/                # 16kHz WAV, 按 speaker_id 分目录
+│   └── noise/                # 16kHz WAV, 按噪声类型分目录 (18 种)
+├── finetune/                 # 微调用
+│   ├── raw/                  # 微调原始数据 (用户放入)
+│   └── processed/            # 微调预处理后 (脚本生成)
+├── premixed/                 # 离线预混合 .npy
+├── test_generated/           # 评估时自动生成的测试数据
+└── splits/                   # train/val/test 分割列表 JSON
+```
 
 ## 快速开始
 
-### 1. 命令行推理 (单文件)
+### 1. 训练 U-Net
 
-```bash
-# 维纳滤波
-python scripts/inference.py input.wav --algo wiener --output clean.wav
-
-# 谱减法 + 对比图
-python scripts/inference.py input.wav --algo spectral_sub --output clean.wav --plot comparison.png
-
-# U-Net 深度学习
-python scripts/inference.py input.m4a --algo unet --ckpt checkpoints/unet/best_model.pt --output clean.wav
-
-# 音频修复 (三次样条插值)
-python scripts/inference.py damaged.wav --algo inpaint --inpaint_method spline --output repaired.wav
-
-# 音频修复 (U-Net 迭代修复)
-python scripts/inference.py damaged.wav --algo inpaint --inpaint_method unet --ckpt checkpoints/unet/best_model.pt --output repaired.wav
-```
-
-所有格式 (.wav .flac .mp3 .m4a .aac) 均可作为输入。
-
-### 2. 批量评估
-
-自动生成测试对并评估（无需预先准备测试文件）：
-
-```bash
-python scripts/evaluate.py --clean_source datasets/processed/clean --noise_source datasets/processed/noise --split_json datasets/splits/test_clean.json --algorithms wiener spectral_sub unet --ckpt checkpoints/unet/best_model.pt --num_test 30 --output evaluation_report.csv
-```
-
-如果已有测试文件，也可直接指定目录：
-
-```bash
-python scripts/evaluate.py --noisy_dir datasets/test_noisy --clean_dir datasets/test_clean --algorithms wiener spectral_sub unet --ckpt checkpoints/unet/best_model.pt --output evaluation_report.csv
-```
-
-音频修复批量评估（自动生成损坏 → 修复 → 对比）：
-```bash
-python scripts/evaluate.py --mode inpainting --clean_source datasets/processed/clean --split_json datasets/splits/test_clean.json --methods spline spectral unet --ckpt checkpoints/unet/best_model.pt --num_test 20 --output evaluation_report_inpainting.csv
-```
-
-### 3. 训练 U-Net 模型
-
-动态混合模式（在线合成带噪数据）：
+动态混合模式：
 ```bash
 python scripts/train.py --config config/unet.yaml --clean_dir datasets/processed/clean --noise_dir datasets/processed/noise
 ```
 
-预混合模式（先运行 premix_dataset.py，再训练，速度提升 10~20 倍）：
+预混合模式（推荐）：
 ```bash
 python scripts/train.py --config config/unet.yaml --use_premix --premix_dir datasets/premixed
 ```
 
-训练完成后，checkpoint 保存至 `checkpoints/unet/best_model.pt`。
+#### U-Net 微调
 
-### 4. 生成实验图表
+原始 U-Net 在 LibriSpeech（英文朗读）上训练，对歌曲/中文对话等分布外数据效果差。微调用少量跨域数据适配模型。
 
-训练和评估完成后，一键生成全部科研报告所需图表：
+**微调原理**：Encoder 前 4 层提取底层频谱纹理（通用特征，冻结）；Encoder 后 3 层 + Bottleneck + Decoder 提取语音/噪声判别（领域相关，可训练）。冻结 ~40% 参数，仅训练 ~60%，lr=5e-5（比从头训练小 20 倍），10~20 epoch 防过拟合。权重保存至 `checkpoints/unet_finetuned/`，不覆盖原始权重。
+
+```bash
+# 1. 预处理微调数据 (需先按上面步骤下载并放入 datasets/finetune/raw/)
+python scripts/prepare_finetune_data.py
+
+# 2. 微调
+python scripts/finetune.py --clean_dir datasets/finetune/processed/clean --noise_dir datasets/finetune/processed/noise --pretrained checkpoints/unet/best_model.pt --output_dir checkpoints/unet_finetuned --epochs 15
+
+# 3. 使用微调权重
+python scripts/inference.py song.wav --algo unet --ckpt checkpoints/unet_finetuned/best_model.pt --output clean.wav
+```
+
+### 2. 批量评估
+
+降噪评估（自动生成测试对）：
+```bash
+python scripts/evaluate.py --clean_source datasets/processed/clean --noise_source datasets/processed/noise --split_json datasets/splits/test_clean.json --algorithms wiener spectral_sub unet hybrid --ckpt checkpoints/unet/best_model.pt --num_test 30 --output evaluation_report.csv
+```
+
+音频修复评估（自动损坏→修复→对比）：
+```bash
+python scripts/evaluate.py --mode inpainting --clean_source datasets/processed/clean --split_json datasets/splits/test_clean.json --methods spline spectral unet --ckpt checkpoints/unet/best_model.pt --num_test 20 --output evaluation_report_inpainting.csv
+```
+
+### 3. 生成实验图表
 
 ```bash
 python scripts/plot_results.py --eval_csv evaluation_report.csv --train_csv logs/training_history.csv --model_ckpt checkpoints/unet/best_model.pt --output_dir results/figures
 ```
 
-自动生成的图表：
+### 4. 命令行推理
+
+```bash
+# 维纳滤波
+python scripts/inference.py input.wav --algo wiener --output clean.wav
+
+# 谱减法
+python scripts/inference.py input.wav --algo spectral_sub --output clean.wav --plot comparison.png
+
+# U-Net
+python scripts/inference.py input.m4a --algo unet --ckpt checkpoints/unet/best_model.pt --output clean.wav
+
+# Hybrid (不需微调，跨域鲁棒)
+python scripts/inference.py song.wav --algo hybrid --ckpt checkpoints/unet/best_model.pt --output clean.wav
+
+# 音频修复
+python scripts/inference.py damaged.wav --algo inpaint --inpaint_method unet --ckpt checkpoints/unet/best_model.pt --output repaired.wav
 ```
-results/figures/
-├── training_curves.png         # Loss + LR 训练曲线
-├── algorithm_comparison.png    # 多算法柱状图对比
-├── quality_vs_speed.png        # 质量-推理速度散点图
-├── irm_mask_example.png        # IRM 掩膜三行热力图
-├── feature_tsne.png            # t-SNE 特征降维散点图
-└── activation_map.png          # 激活图叠加
-```
+
+所有格式 (.wav .flac .mp3 .m4a .aac) 均可作为输入。
 
 ### 5. 启动 GUI
 
 ```bash
-# 传统算法
+# 传统算法 (无需 --ckpt)
 python ui/main_window.py
 
-# 含 U-Net 深度学习模型
+# 含 U-Net (加载原始权重)
 python ui/main_window.py --ckpt checkpoints/unet/best_model.pt
+
+# 含微调 U-Net (加载微调权重)
+python ui/main_window.py --ckpt checkpoints/unet_finetuned/best_model.pt
 ```
 
-GUI 操作流程：
+状态栏会显示当前加载的模型路径。GUI 操作流程：
 
-**模式 A — 文件加载 + 降噪对比**：
+**降噪对比模式**：
 1. 点击 **加载音频** → 选择文件 (支持 `.wav/.mp3/.flac/.m4a/.aac`)
 2. 模式选 **降噪**，勾选 **对比全部方法**
-3. 点击 **▶ 执行** → 串行跑 Wiener + SpectralSub + U-Net
-4. 查看结果：多色波形叠加 / 对比指标表格 / 频谱图 / 噪声诊断
+3. 点击 **▶ 执行** → 串行跑 Wiener + SpectralSub + U-Net + Hybrid
+4. 对比表格第一行为 **"Noisy (Original)"**（带噪原始基准），下拉可切换查看各方法波形/频谱/播放
 
-**模式 B — 文件加载 + 修复对比**：
-1. 加载损坏音频（或先用降噪模式处理正常音频）
-2. 模式选 **修复**，勾选 **对比全部方法**
-3. 点击 **▶ 执行** → 串行跑 Spline + Spectral + U-Net 修复
-4. 指标表格直接对比三种修复策略
+**修复对比模式**：
+1. 加载损坏音频，模式选 **修复**，勾选 **对比全部方法**
+2. 点击 **▶ 执行** → 串行跑 Spline + Spectral + U-Net 修复
+3. 对比表格直接展示三种修复策略 + Noisy (Original) 基准
 
-**模式 C — 在线录音**：
-1. 点击 **录制音频** → 开始录音 → 停止
-2. 选择模式和算法 → 点击 **▶ 执行**
+**在线录音模式**：点击 **录制音频** → 开始录音 → 停止 → 选模式/方法 → **▶ 执行**
 
 **单选模式**：取消勾选"对比全部方法"，下拉选择具体方法，只跑一种。
 
@@ -263,7 +274,9 @@ audio-denoising/
 │   ├── base.py                 # BaseDenoiser 抽象基类 (强制 forward + denoise_audio)
 │   ├── wiener.py               # WienerFilter — 频域维纳滤波
 │   ├── spectral_sub.py         # SpectralSubtraction — 谱减法
-│   └── unet.py                 # UNetDenoiser — 7层 Encoder-Decoder IRM 掩膜模型
+│   ├── unet.py                 # UNetDenoiser — 7层 Encoder-Decoder IRM 掩膜模型
+│   ├── hybrid.py               # HybridDenoiser — U-Net+Wiener 混合降噪
+│   └── audio_inpainter.py      # AudioInpainter — 音频修复 (spline/spectral/unet)
 │
 ├── evaluation/                 # 评估基准层
 │   ├── __init__.py             # 模块导出 (compute_all_metrics, plot_*, ...)
@@ -285,7 +298,9 @@ audio-denoising/
 │   ├── prepare_data.py         # 数据集自动化预处理 (LibriSpeech + DEMAND)
 │   ├── premix_dataset.py       # 离线预混合 → .npy 训练对 (加速训练)
 │   ├── train.py                # U-Net 训练 (--use_premix 启用预混合模式)
-│   ├── inference.py            # 单文件推理 (--algo wiener|spectral_sub|unet)
+│   ├── finetune.py             # U-Net 微调 (冻结 Encoder 前 4 层)
+│   ├── prepare_finetune_data.py # 微调数据预处理
+│   ├── inference.py            # 单文件推理 (--algo wiener|spectral_sub|unet|hybrid|inpaint)
 │   ├── evaluate.py             # 批量评估 → CSV 对比报告
 │   └── plot_results.py         # 一键生成全部实验图表
 │
@@ -294,7 +309,9 @@ audio-denoising/
 │   ├── test_metrics.py         # 指标极端场景验证 (相同信号/零信号)
 │   └── test_models.py          # 模型推理 shape/值域验证
 │
-├── checkpoints/                # 模型权重存放 (gitignore)
+├── checkpoints/                # 模型权重存放
+│   ├── unet/                   # 原始训练权重
+│   └── unet_finetuned/         # 微调权重
 ├── logs/                       # 训练日志和 loss CSV (gitignore)
 ├── results/                    # 实验图表输出 (gitignore)
 ├── requirements.txt            # Python 完整依赖列表
@@ -320,6 +337,7 @@ audio-denoising/
 | `wiener.py` | `WienerFilter` — 前 N 帧估计噪声功率谱 → 逐帧维纳增益衰减 → 重叠相加还原。参数：帧长 32ms、噪声窗口 500ms |
 | `spectral_sub.py` | `SpectralSubtraction` — 过减因子 α=2.0 + 频谱底板 β=0.01，前 N 帧估计噪声 → 逐帧谱减 → IFFT 重建 |
 | `unet.py` | `UNetDenoiser` — 7 层 Encoder-Decoder (Conv2d+BN+ReLU) + Skip Connections → Sigmoid 输出 IRM 掩膜；训练损失 = MSE(掩膜) + L1(幅度谱)；推理 `denoise_audio()` (STFT→掩膜→iSTFT)；GUI/inference/evaluate 全链路集成 |
+| `hybrid.py` | `HybridDenoiser` — U-Net 预测 IRM 掩膜 → 反推动态噪声能量谱 `(1-mask)²×|Y|²` → 驱动 Wiener 保守降噪。U-Net 高置信度区域信任原版效果，低置信度区域自动切换 Wiener 保守策略，对歌曲/中文等分布外数据有效，不重新训练 |
 | `audio_inpainter.py` | `AudioInpainter` — 损坏检测 + 三种修复方法 (spline/spectral/unet)；`generate_damaged()` 自动生成静音/削波/频率缺失损坏音频用于评估 |
 
 ### 评估基准层 (`evaluation/`)

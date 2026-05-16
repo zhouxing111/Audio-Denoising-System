@@ -320,6 +320,11 @@ def main() -> None:
         elif algo == "spectral_sub":
             from models.spectral_sub import SpectralSubtraction
             denoisers["spectral_sub"] = SpectralSubtraction()
+        elif algo == "hybrid":
+            from models.hybrid import HybridDenoiser
+            hybrid_denoiser = HybridDenoiser()
+            denoisers["hybrid"] = hybrid_denoiser
+            logger.info("Hybrid 降噪器已就绪")
         elif algo == "unet":
             import torch
             from models.unet import UNetDenoiser
@@ -354,6 +359,8 @@ def main() -> None:
                 logger.info(f"处理: {nf.name} / {algo_name}")
                 if algo_name == "unet":
                     denoised = unet_model.denoise_audio(noisy, sr)
+                elif algo_name == "hybrid":
+                    denoised = denoisers["hybrid"].denoise_audio(noisy, sr, model_ckpt=args.ckpt)
                 else:
                     denoised = denoisers[algo_name].denoise_audio(noisy, sr)
                 metrics = compute_all_metrics(clean[:len(denoised)], denoised, sr)

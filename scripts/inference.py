@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--algo", type=str, default="wiener",
-        choices=["wiener", "spectral_sub", "unet", "inpaint"],
+        choices=["wiener", "spectral_sub", "unet", "hybrid", "inpaint"],
         help="降噪/修复算法选择",
     )
     parser.add_argument(
@@ -72,6 +72,16 @@ def main() -> None:
     elif args.algo == "spectral_sub":
         from models.spectral_sub import SpectralSubtraction
         denoiser = SpectralSubtraction()
+    elif args.algo == "hybrid":
+        from models.hybrid import HybridDenoiser
+        h = HybridDenoiser()
+        denoised = h.denoise_audio(waveform, sr, model_ckpt=args.ckpt)
+        sf.write(args.output, denoised.astype(np.float32), sr)
+        logger.info(f"Hybrid 降噪音频已保存: {args.output}")
+        if args.plot:
+            fig = plot_comparison(waveform, denoised, sr=sr)
+            fig.savefig(args.plot, dpi=150, bbox_inches="tight")
+        return
     elif args.algo == "unet":
         import torch
         from models.unet import UNetDenoiser

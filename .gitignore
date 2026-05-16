@@ -5,6 +5,7 @@ datasets/processed/clean/
 datasets/processed/noise/
 datasets/premixed/
 datasets/test_generated/
+datasets/finetune/processed/
 datasets/splits/*.json
 
 # 模型权重

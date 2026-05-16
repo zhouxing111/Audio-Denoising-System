@@ -147,6 +147,57 @@ class MetricsPanel(QWidget):
                 val_item.setFlags(val_item.flags() & ~Qt.ItemIsEditable)
                 self._table.setItem(i, j + 1, val_item)
 
+    def set_before_after(
+        self, metrics_before: dict[str, float], metrics_after: dict[str, float],
+    ) -> None:
+        """前后对比模式：列 = Metric | Before | After | Improvement。
+
+        Args:
+            metrics_before: 降噪前指标 (clean vs noisy).
+            metrics_after: 降噪后指标 (clean vs denoised).
+        """
+        metric_names = list(metrics_before.keys())
+        if not metric_names:
+            return
+        self._table.setRowCount(len(metric_names))
+        self._table.setColumnCount(4)
+        self._table.setHorizontalHeaderLabels(["Metric", "Before", "After", "Improvement"])
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for j in range(1, 4):
+            self._table.horizontalHeader().setSectionResizeMode(j, QHeaderView.ResizeToContents)
+
+        for i, name in enumerate(metric_names):
+            name_item = QTableWidgetItem(name)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            self._table.setItem(i, 0, name_item)
+
+            before_val = metrics_before.get(name, float("nan"))
+            after_val = metrics_after.get(name, float("nan"))
+
+            for col, val in [(1, before_val), (2, after_val)]:
+                if not np.isnan(val):
+                    item = QTableWidgetItem(f"{val:.4f}")
+                    item.setTextAlignment(Qt.AlignCenter)
+                    self._apply_color(item, name, val)
+                else:
+                    item = QTableWidgetItem("N/A")
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self._table.setItem(i, col, item)
+
+            # Improvement 列
+            if not np.isnan(before_val) and not np.isnan(after_val):
+                diff = after_val - before_val
+                # LSD 越小越好，所以 improvement 符号反转
+                if name == "LSD (dB)":
+                    diff = -diff
+                diff_item = QTableWidgetItem(f"{diff:+.4f}")
+                diff_item.setTextAlignment(Qt.AlignCenter)
+                diff_item.setForeground(Qt.darkGreen if diff > 0 else (Qt.red if diff < 0 else Qt.gray))
+            else:
+                diff_item = QTableWidgetItem("N/A")
+            diff_item.setFlags(diff_item.flags() & ~Qt.ItemIsEditable)
+            self._table.setItem(i, 3, diff_item)
+
     def clear(self) -> None:
         """清空指标表格。"""
         self._table.setRowCount(0)

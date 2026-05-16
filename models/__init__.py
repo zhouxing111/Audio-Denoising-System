@@ -9,3 +9,4 @@ from .base import BaseDenoiser
 from .wiener import WienerFilter
 from .spectral_sub import SpectralSubtraction
 from .audio_inpainter import AudioInpainter
+from .hybrid import HybridDenoiser
