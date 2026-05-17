@@ -186,9 +186,9 @@ python scripts/inference.py song.wav --algo unet --ckpt checkpoints/unet_finetun
 
 ### 2. 批量评估
 
-降噪评估（自动生成测试对）：
+降噪评估（原始+微调 U-Net 对比）：
 ```bash
-python scripts/evaluate.py --clean_source datasets/processed/clean --noise_source datasets/processed/noise --split_json datasets/splits/test_clean.json --algorithms wiener spectral_sub unet hybrid --ckpt checkpoints/unet/best_model.pt --num_test 30 --output evaluation_report.csv
+python scripts/evaluate.py --clean_source datasets/processed/clean --noise_source datasets/processed/noise --split_json datasets/splits/test_clean.json --algorithms wiener spectral_sub unet unet_ft hybrid --ckpt checkpoints/unet/best_model.pt --ft_ckpt checkpoints/unet_finetuned/best_model.pt --num_test 30 --output evaluation_report.csv
 ```
 
 音频修复评估（自动损坏→修复→对比）：
@@ -198,9 +198,22 @@ python scripts/evaluate.py --mode inpainting --clean_source datasets/processed/c
 
 ### 3. 生成实验图表
 
+训练和微调都完成后，一键生成全部科研图表：
+
 ```bash
-python scripts/plot_results.py --eval_csv evaluation_report.csv --train_csv logs/training_history.csv --model_ckpt checkpoints/unet/best_model.pt --output_dir results/figures
+python scripts/plot_results.py --eval_csv evaluation_report.csv --train_csv logs/training_history.csv --ft_train_csv logs/finetune_history.csv --model_ckpt checkpoints/unet/best_model.pt --output_dir results/figures
 ```
+
+| 图表文件 | 生成条件 | 内容 |
+|----------|----------|------|
+| `training_curves.png` | 训练完成 | 原始 U-Net Loss + LR 曲线 |
+| `finetune_curves.png` | 微调完成 | 微调 Loss 曲线 (finetune.py 自动生成) |
+| `training_comparison.png` | 提供 `--ft_train_csv` | 原始 vs 微调 Loss 并排对比 |
+| `algorithm_comparison.png` | 提供 `--eval_csv` | 全部算法柱状图对比 |
+| `quality_vs_speed.png` | 提供 `--eval_csv` | PESQ vs 推理时间散点图 |
+| `irm_mask_example.png` | `--model_ckpt` + `--test_audio` | IRM 掩膜三行热力图 |
+| `activation_map.png` | `--model_ckpt` + `--test_audio` | 激活图叠加 |
+| `feature_tsne.png` | `--model_ckpt` + `--tsne` | t-SNE 特征降维散点图 |
 
 ### 4. 命令行推理
 
@@ -229,11 +242,11 @@ python scripts/inference.py damaged.wav --algo inpaint --inpaint_method unet --c
 # 传统算法 (无需 --ckpt)
 python ui/main_window.py
 
-# 含 U-Net (加载原始权重)
+# 含 U-Net 原始权重
 python ui/main_window.py --ckpt checkpoints/unet/best_model.pt
 
-# 含微调 U-Net (加载微调权重)
-python ui/main_window.py --ckpt checkpoints/unet_finetuned/best_model.pt
+# 同时加载原始 + 微调权重 (方法列表多出 "U-Net (Fine-tuned)"，Hybrid 自动使用微调权重)
+python ui/main_window.py --ckpt checkpoints/unet/best_model.pt --ft_ckpt checkpoints/unet_finetuned/best_model.pt
 ```
 
 状态栏会显示当前加载的模型路径。GUI 操作流程：

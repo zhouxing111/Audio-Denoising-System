@@ -66,6 +66,7 @@ class BatchWorker(QThread):
     def __init__(
         self, waveform: np.ndarray, sr: int, methods: list[str],
         mode: str, model_ckpt: str | None = None,
+        ft_model_ckpt: str | None = None,
     ):
         """初始化批量工作线程。
 
@@ -74,7 +75,8 @@ class BatchWorker(QThread):
             sr: 采样率.
             methods: 要执行的方法名列表.
             mode: "denoising" 或 "inpainting".
-            model_ckpt: U-Net checkpoint 路径.
+            model_ckpt: 原始 U-Net checkpoint 路径.
+            ft_model_ckpt: 微调 U-Net checkpoint 路径.
         """
         super().__init__()
         self.waveform = waveform
@@ -82,6 +84,7 @@ class BatchWorker(QThread):
         self.methods = methods
         self.mode = mode
         self.model_ckpt = model_ckpt
+        self.ft_model_ckpt = ft_model_ckpt
 
     def run(self) -> None:
         """线程主函数：逐个执行方法。"""
@@ -114,10 +117,14 @@ class BatchWorker(QThread):
         elif method == "Spectral Subtraction":
             from models.spectral_sub import SpectralSubtraction
             return SpectralSubtraction().denoise_audio(self.waveform, self.sr).astype(np.float32)
+        elif method == "U-Net (Fine-tuned)":
+            return self._run_unet_denoise(ckpt=self.ft_model_ckpt)
         elif method == "Hybrid (U-Net + Wiener)":
             from models.hybrid import HybridDenoiser
             h = HybridDenoiser()
-            return h.denoise_audio(self.waveform, self.sr, model_ckpt=self.model_ckpt).astype(np.float32)
+            # Hybrid 优先用微调权重（泛化更好），否则用原始
+            ckpt = self.ft_model_ckpt or self.model_ckpt
+            return h.denoise_audio(self.waveform, self.sr, model_ckpt=ckpt).astype(np.float32)
         else:  # U-Net
             return self._run_unet_denoise()
 
@@ -139,20 +146,24 @@ class BatchWorker(QThread):
         else:  # U-Net Inpainting
             return inpainter.inpaint(self.waveform, self.sr, method="unet", model_ckpt=self.model_ckpt)
 
-    def _run_unet_denoise(self) -> np.ndarray:
+    def _run_unet_denoise(self, ckpt: str | None = None) -> np.ndarray:
         """U-Net 降噪推理。
+
+        Args:
+            ckpt: checkpoint 路径 (None 则用 self.model_ckpt).
 
         Returns:
             降噪后波形.
         """
         import torch
         from models.unet import UNetDenoiser
-        if not self.model_ckpt or not Path(self.model_ckpt).exists():
-            raise FileNotFoundError(f"U-Net checkpoint 未找到: {self.model_ckpt}")
+        ckpt_path = ckpt or self.model_ckpt
+        if not ckpt_path or not Path(ckpt_path).exists():
+            raise FileNotFoundError(f"U-Net checkpoint 未找到: {ckpt_path}")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = UNetDenoiser(n_fft=512, hop_length=256).to(device)
-        ckpt = torch.load(self.model_ckpt, map_location=device)
-        model.load_state_dict(ckpt["model_state_dict"])
+        state = torch.load(ckpt_path, map_location=device)
+        model.load_state_dict(state["model_state_dict"])
         model.eval()
         return model.denoise_audio(self.waveform, self.sr).astype(np.float32)
 
@@ -167,7 +178,7 @@ class MainWindow(QMainWindow):
       [音频回放]
     """
 
-    def __init__(self, model_ckpt: str | None = None):
+    def __init__(self, model_ckpt: str | None = None, ft_model_ckpt: str | None = None):
         super().__init__()
         self.setWindowTitle("智能音频降噪系统")
         self.setMinimumSize(1100, 800)
@@ -175,6 +186,7 @@ class MainWindow(QMainWindow):
         self._results: dict[str, np.ndarray] = {}
         self._sr = None
         self._model_ckpt = model_ckpt
+        self._ft_model_ckpt = ft_model_ckpt
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -217,10 +229,14 @@ class MainWindow(QMainWindow):
         self._chk_compare.toggled.connect(self._on_compare_toggled)
         ctrl_layout.addWidget(self._chk_compare)
 
-        # 方法选择
+        # 方法选择 (微调权重存在时增加 "U-Net (Fine-tuned)")
         ctrl_layout.addWidget(QLabel("方法:"))
         self._combo_method = QComboBox()
-        self._combo_method.addItems(DENOISING_METHODS)
+        methods = list(DENOISING_METHODS)
+        if self._ft_model_ckpt:
+            methods.insert(3, "U-Net (Fine-tuned)")  # 插在 U-Net 和 Hybrid 之间
+        self._denoising_methods = methods
+        self._combo_method.addItems(methods)
         ctrl_layout.addWidget(self._combo_method)
 
         # 执行 / 导出
@@ -283,7 +299,12 @@ class MainWindow(QMainWindow):
         self._progress = QProgressBar()
         self._progress.setVisible(False)
         main_layout.addWidget(self._progress)
-        ckpt_info = f" | U-Net: {self._model_ckpt}" if self._model_ckpt else ""
+        parts = []
+        if self._model_ckpt:
+            parts.append(f"U-Net: {self._model_ckpt}")
+        if self._ft_model_ckpt:
+            parts.append(f"FT: {self._ft_model_ckpt}")
+        ckpt_info = " | " + " | ".join(parts) if parts else ""
         self._status = QLabel(f"就绪 — 请加载音频文件或使用麦克风录制{ckpt_info}")
         main_layout.addWidget(self._status)
 
@@ -291,7 +312,7 @@ class MainWindow(QMainWindow):
 
     def _on_mode_changed(self) -> None:
         """模式切换：更新方法下拉内容。"""
-        methods = INPAINTING_METHODS if self._radio_inpaint.isChecked() else DENOISING_METHODS
+        methods = INPAINTING_METHODS if self._radio_inpaint.isChecked() else self._denoising_methods
         self._combo_method.clear()
         self._combo_method.addItems(methods)
 
@@ -306,7 +327,7 @@ class MainWindow(QMainWindow):
             方法名列表.
         """
         if self._chk_compare.isChecked():
-            return INPAINTING_METHODS if self._radio_inpaint.isChecked() else DENOISING_METHODS
+            return INPAINTING_METHODS if self._radio_inpaint.isChecked() else self._denoising_methods
         return [self._combo_method.currentText()]
 
     # ---------- 文件/录制 ----------
@@ -380,6 +401,7 @@ class MainWindow(QMainWindow):
 
         self._worker = BatchWorker(
             self._waveform, self._sr, methods, mode, model_ckpt=self._model_ckpt,
+            ft_model_ckpt=self._ft_model_ckpt,
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_batch_finished)
@@ -505,13 +527,16 @@ def main():
     """启动 GUI。"""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     ckpt = None
-    for i, arg in enumerate(sys.argv):
-        if arg == "--ckpt" and i + 1 < len(sys.argv):
-            ckpt = sys.argv[i + 1]
-            break
+    ft_ckpt = None
+    args = sys.argv
+    for i, arg in enumerate(args):
+        if arg == "--ckpt" and i + 1 < len(args):
+            ckpt = args[i + 1]
+        elif arg == "--ft_ckpt" and i + 1 < len(args):
+            ft_ckpt = args[i + 1]
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    window = MainWindow(model_ckpt=ckpt)
+    window = MainWindow(model_ckpt=ckpt, ft_model_ckpt=ft_ckpt)
     window.show()
     sys.exit(app.exec())
 

@@ -30,6 +30,7 @@ from evaluation.visualizer import (
     plot_feature_tsne,
     plot_irm_mask,
     plot_scatter_quality_speed,
+    plot_training_comparison,
     plot_training_curves,
 )
 
@@ -44,6 +45,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--train_csv", type=str, default="logs/training_history.csv",
         help="训练历史 CSV 路径 (train.py 生成)",
+    )
+    parser.add_argument(
+        "--ft_train_csv", type=str, default=None,
+        help="微调训练历史 CSV 路径 (finetune.py 生成), 提供时生成对比图",
     )
     parser.add_argument(
         "--model_ckpt", type=str, default=None,
@@ -124,16 +129,23 @@ def generate_from_eval_csv(eval_path: str, output_dir: str) -> dict:
     return metrics_dict
 
 
-def generate_training_plot(train_csv: str, output_dir: str) -> None:
-    """生成训练曲线图。
+def generate_training_plot(train_csv: str, output_dir: str, ft_train_csv: str | None = None) -> None:
+    """生成训练曲线图。如果提供微调 CSV 则生成并排对比图。
 
     Args:
         train_csv: 训练历史 CSV 路径.
         output_dir: 输出目录.
+        ft_train_csv: 微调训练 CSV 路径 (可选).
     """
     if not Path(train_csv).exists():
         logging.warning(f"训练 CSV 不存在: {train_csv}，跳过训练曲线")
         return
+
+    if ft_train_csv and Path(ft_train_csv).exists():
+        fig = plot_training_comparison(train_csv, ft_train_csv)
+        path = os.path.join(output_dir, "training_comparison.png")
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        logging.info(f"双模型训练对比图: {path}")
 
     fig = plot_training_curves(train_csv, title="U-Net Training Curves")
     path = os.path.join(output_dir, "training_curves.png")
@@ -334,7 +346,7 @@ def main() -> None:
     os.makedirs(args.output_dir, exist_ok=True)
 
     generate_from_eval_csv(args.eval_csv, args.output_dir)
-    generate_training_plot(args.train_csv, args.output_dir)
+    generate_training_plot(args.train_csv, args.output_dir, ft_train_csv=args.ft_train_csv)
     generate_model_plots(args.model_ckpt, args.test_audio, args.output_dir, tsne=args.tsne)
 
     logging.info(f"全部图表已保存至: {args.output_dir}/")

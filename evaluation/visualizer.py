@@ -270,6 +270,54 @@ def plot_training_curves(
     return fig
 
 
+def plot_training_comparison(
+    original_csv: str,
+    finetuned_csv: str,
+    title: str = "Training Curves: Original vs Fine-tuned",
+    figsize: tuple[int, int] = (12, 5),
+) -> plt.Figure:
+    """原始 U-Net vs 微调 U-Net Loss 曲线并排对比。
+
+    Args:
+        original_csv: 原始训练 CSV 路径.
+        finetuned_csv: 微调训练 CSV 路径.
+        title: 图表标题.
+        figsize: 图表尺寸.
+
+    Returns:
+        matplotlib Figure 对象.
+    """
+    import csv
+
+    def _read(csv_path):
+        epochs, losses = [], []
+        with open(csv_path, "r") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                epochs.append(int(row["epoch"]))
+                losses.append(float(row["train_loss"]))
+        return epochs, losses
+
+    orig_e, orig_l = _read(original_csv)
+    ft_e, ft_l = _read(finetuned_csv)
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+
+    ax = axes[0]
+    ax.plot(orig_e, orig_l, color="#E74C3C", linewidth=1.5, marker="o", markersize=3, label="Original U-Net")
+    ax.set_xlabel("Epoch"); ax.set_ylabel("Loss"); ax.set_title("Original Training")
+    ax.grid(True, alpha=0.3); ax.legend()
+
+    ax = axes[1]
+    ax.plot(ft_e, ft_l, color="#27AE60", linewidth=1.5, marker="o", markersize=3, label="Fine-tuned U-Net")
+    ax.set_xlabel("Epoch"); ax.set_ylabel("Loss"); ax.set_title("Fine-tuning")
+    ax.grid(True, alpha=0.3); ax.legend()
+
+    fig.suptitle(title)
+    plt.tight_layout()
+    return fig
+
+
 # ============================================================
 #  定量分析图
 # ============================================================

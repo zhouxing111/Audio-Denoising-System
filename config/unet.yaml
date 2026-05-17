@@ -7,7 +7,7 @@ model:
 
 training:
   batch_size: 16
-  epochs: 100
+  epochs: 30
   lr: 0.001
   lr_decay: 0.95            # 每 epoch 衰减因子
   weight_decay: 0.0001

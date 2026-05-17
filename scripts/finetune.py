@@ -186,6 +186,13 @@ def main() -> None:
     csv_file.close()
     logger.info(f"微调完成！模型保存至 {args.output_dir}/best_model.pt")
 
+    # 自动生成微调训练曲线
+    from evaluation.visualizer import plot_training_curves
+    fig_path = os.path.join("logs", "finetune_curves.png")
+    fig = plot_training_curves(csv_path, title="U-Net Fine-tuning Curves")
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    logger.info(f"微调训练曲线图: {fig_path}")
+
 
 if __name__ == "__main__":
     main()

@@ -6,6 +6,10 @@ datasets/processed/noise/
 datasets/premixed/
 datasets/test_generated/
 datasets/finetune/processed/
+datasets/finetune/raw/zh/
+datasets/finetune/raw/en/
+datasets/finetune/raw/sing/
+datasets/finetune/raw/noise/
 datasets/splits/*.json
 
 # 模型权重

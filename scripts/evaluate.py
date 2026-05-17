@@ -76,6 +76,10 @@ def parse_args() -> argparse.Namespace:
         help="U-Net checkpoint 路径 (unet/inpainting 时需要)",
     )
     parser.add_argument(
+        "--ft_ckpt", type=str, default="checkpoints/unet_finetuned/best_model.pt",
+        help="微调 U-Net checkpoint 路径 (仅 unet_ft 算法需要)",
+    )
+    parser.add_argument(
         "--methods", type=str, nargs="+",
         default=["spline", "spectral", "unet"],
         help="修复方法列表 (仅 --mode inpainting)",
@@ -313,6 +317,7 @@ def main() -> None:
     denoisers = {}
     unet_model = None
     unet_device = None
+    unet_ft_model = None
     for algo in args.algorithms:
         if algo == "wiener":
             from models.wiener import WienerFilter
@@ -325,6 +330,16 @@ def main() -> None:
             hybrid_denoiser = HybridDenoiser()
             denoisers["hybrid"] = hybrid_denoiser
             logger.info("Hybrid 降噪器已就绪")
+        elif algo == "unet_ft":
+            import torch
+            from models.unet import UNetDenoiser
+            ft_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            unet_ft_model = UNetDenoiser(n_fft=512, hop_length=256).to(ft_device)
+            ft_ckpt = torch.load(args.ft_ckpt, map_location=ft_device)
+            unet_ft_model.load_state_dict(ft_ckpt["model_state_dict"])
+            unet_ft_model.eval()
+            denoisers["unet_ft"] = None
+            logger.info(f"微调 U-Net 已加载: {args.ft_ckpt}")
         elif algo == "unet":
             import torch
             from models.unet import UNetDenoiser
@@ -359,6 +374,8 @@ def main() -> None:
                 logger.info(f"处理: {nf.name} / {algo_name}")
                 if algo_name == "unet":
                     denoised = unet_model.denoise_audio(noisy, sr)
+                elif algo_name == "unet_ft":
+                    denoised = unet_ft_model.denoise_audio(noisy, sr)
                 elif algo_name == "hybrid":
                     denoised = denoisers["hybrid"].denoise_audio(noisy, sr, model_ckpt=args.ckpt)
                 else:
