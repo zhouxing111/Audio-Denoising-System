@@ -1,7 +1,7 @@
 """
 evaluation/metrics.py — 客观声学评估指标
 
-实现 SNR, SegSNR, SI-SDR, STOI, PESQ, LSD 和 DNSMOS 七种指标。
+实现 SNR, SegSNR, SI-SDR, STOI, PESQ, LSD 和 DNSMOS P.835 (SIG/BAK/OVRL) 共 10 项指标。
 主入口: compute_all_metrics(clean, denoised, sr) → dict
 """
 
@@ -49,6 +49,12 @@ def compute_all_metrics(
     # --- 感知 ---
     results["PESQ_WB"] = _compute_pesq(clean, denoised, sr, wb=True)
     results["PESQ_NB"] = _compute_pesq(clean, denoised, sr, wb=False)
+
+    # --- 无参考感知 (评估降噪后信号，不需要 clean 参考) ---
+    dnsmos = _compute_dnsmos(denoised, sr)
+    results["DNSMOS_SIG"] = dnsmos.get("SIG", float("nan"))
+    results["DNSMOS_BAK"] = dnsmos.get("BAK", float("nan"))
+    results["DNSMOS_OVRL"] = dnsmos.get("OVRL", float("nan"))
 
     return results
 
@@ -191,51 +197,55 @@ def _compute_pesq(
 
 def _compute_dnsmos(
     waveform: np.ndarray, sr: int = 16000
-) -> float:
-    """使用 MIT DNSMOS 预训练模型预测无参考 MOS 得分。
+) -> dict[str, float]:
+    """使用 torchmetrics (微软 DNSMOS P.835) 计算无参考感知质量。
 
-    无需纯净参考信号，直接评估语音自然度和质量。
-    得分范围约 1~5，越高越好。
+    返回 ITU-T P.835 三维子分数:
+      - SIG: 语音信号质量 (人声本身是否受损)
+      - BAK: 背景噪声抑制质量 (降噪是否自然)
+      - OVRL: 整体听感质量
+
+    BAK 高 + SIG 低 → U-Net 过度切除人声的典型反面案例。
 
     Args:
         waveform: 待评估音频波形.
         sr: 采样率 (Hz, 需 16000).
 
     Returns:
-        DNSMOS 预测得分 (1~5), 失败返回 NaN.
+        {"SIG": float, "BAK": float, "OVRL": float}, 失败返回全部 NaN.
     """
+    nan = {"SIG": float("nan"), "BAK": float("nan"), "OVRL": float("nan")}
     try:
-        import onnxruntime as ort
-        import librosa
+        import torch
+        from torchmetrics.functional.audio.dnsmos import (
+            deep_noise_suppression_mean_opinion_score as dnsmos_fn,
+        )
 
-        # DNSMOS 需要 16kHz
         if sr != 16000:
+            import librosa
             waveform = librosa.resample(waveform, orig_sr=sr, target_sr=16000)
 
-        # 计算 log-mel 特征 (DNSMOS 的输入)
-        mel = librosa.feature.melspectrogram(
-            y=waveform.astype(np.float32),
-            sr=16000,
-            n_fft=512,
-            hop_length=160,
-            n_mels=64,
-            fmin=20,
-            fmax=8000,
-        )
-        log_mel = np.log10(np.maximum(mel, 1e-10)).T  # (T, 64)
-
-        # 注意: 完整 DNSMOS 需要下载 ONNX 模型文件
-        # 此处提供接口框架，实际推理需加载 pDNSMOS 的 SIG/BAK/OVRL 三个模型
-        logger.warning(
-            "DNSMOS 需要下载 ONNX 模型文件才能工作，"
-            "请参考 https://github.com/microsoft/DNS-Challenge"
-        )
-        return float("nan")
+        tensor = torch.from_numpy(waveform.astype(np.float32)).unsqueeze(0)  # (1, T)
+        # torchmetrics DNSMOS 返回 (mos, sig, bak, ovrl) or just the tuple
+        result = dnsmos_fn(tensor, 16000, False)
+        # result shape depends on torchmetrics version; typically it's a dict or tuple
+        if isinstance(result, dict):
+            return {
+                "SIG": float(result.get("sig", result.get("SIG", float("nan")))),
+                "BAK": float(result.get("bak", result.get("BAK", float("nan")))),
+                "OVRL": float(result.get("ovrl", result.get("OVRL", float("nan")))),
+            }
+        # Some versions return (mos, sig, bak, ovrl) as tensor
+        if hasattr(result, "shape") and result.numel() >= 3:
+            vals = result.squeeze().cpu().numpy()
+            return {"SIG": float(vals[1]), "BAK": float(vals[2]), "OVRL": float(vals[0])}
+        return nan
     except ImportError:
-        logger.warning("onnxruntime 未安装，跳过 DNSMOS 计算")
-        return float("nan")
-    except Exception:
-        return float("nan")
+        logger.warning("torchmetrics 未安装，跳过 DNSMOS (pip install torchmetrics)")
+        return nan
+    except Exception as e:
+        logger.warning(f"DNSMOS 计算失败: {e}")
+        return nan
 
 
 def _compute_lsd(

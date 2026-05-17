@@ -64,7 +64,7 @@ def parse_args() -> argparse.Namespace:
         help="测试文件输出目录 (模式 B)",
     )
     parser.add_argument(
-        "--output", type=str, default="evaluation_report.csv", help="输出 CSV 路径"
+        "--output", type=str, default="evaluations/evaluation_report.csv", help="输出 CSV 路径"
     )
     parser.add_argument(
         "--algorithms", type=str, nargs="+",
@@ -272,6 +272,7 @@ def run_inpainting_eval(args) -> None:
                 sf.write(str(repaired_dir / f"repaired_{idx:04d}_{method}.wav"),
                          repaired, sr, subtype="PCM_16")
 
+    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     logger.info(f"修复评估报告已保存: {args.output}")
 
 
@@ -352,6 +353,7 @@ def main() -> None:
             logger.info(f"U-Net 模型已加载: {args.ckpt}")
 
     # 写入 CSV
+    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     fieldnames = [
         "file", "algorithm",
         "SNR (dB)", "SegSNR (dB)", "SI-SDR (dB)",

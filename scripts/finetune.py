@@ -162,7 +162,7 @@ def main() -> None:
     csv_path = os.path.join("logs", "finetune_history.csv")
     csv_file = open(csv_path, "w", newline="")
     csv_writer = csv.writer(csv_file)
-    csv_writer.writerow(["epoch", "train_loss"])
+    csv_writer.writerow(["epoch", "train_loss", "lr"])
 
     best_loss = float("inf")
     for epoch in range(args.epochs):
@@ -172,7 +172,7 @@ def main() -> None:
             n_fft=cfg["model"]["n_fft"], hop_length=cfg["model"]["hop_length"],
         )
         logger.info(f"Epoch {epoch + 1} | Loss: {train_loss:.4f}")
-        csv_writer.writerow([epoch + 1, f"{train_loss:.6f}"])
+        csv_writer.writerow([epoch + 1, f"{train_loss:.6f}", f"{args.lr:.8f}"])
         csv_file.flush()
 
         if train_loss < best_loss:

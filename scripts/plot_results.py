@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(description="生成全部实验图表")
     parser.add_argument(
-        "--eval_csv", type=str, default="evaluation_report.csv",
+        "--eval_csv", type=str, default="evaluations/evaluation_report.csv",
         help="评估报告 CSV 路径 (evaluate.py 生成)",
     )
     parser.add_argument(

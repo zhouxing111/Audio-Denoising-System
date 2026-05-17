@@ -242,12 +242,16 @@ def plot_training_curves(
     import csv
 
     epochs, losses, lrs = [], [], []
+    has_lr = True
     with open(csv_path, "r") as f:
         reader = csv.DictReader(f)
+        if "lr" not in (reader.fieldnames or []):
+            has_lr = False
         for row in reader:
             epochs.append(int(row["epoch"]))
             losses.append(float(row["train_loss"]))
-            lrs.append(float(row["lr"]))
+            if has_lr:
+                lrs.append(float(row["lr"]))
 
     fig, ax1 = plt.subplots(figsize=figsize)
     ax1.plot(epochs, losses, color="#E74C3C", linewidth=1.5, marker="o", markersize=3, label="Train Loss")
@@ -256,14 +260,16 @@ def plot_training_curves(
     ax1.tick_params(axis="y", labelcolor="#E74C3C")
     ax1.grid(True, alpha=0.3)
 
-    ax2 = ax1.twinx()
-    ax2.plot(epochs, lrs, color="#2980B9", linewidth=1.2, linestyle="--", label="Learning Rate")
-    ax2.set_ylabel("Learning Rate", color="#2980B9")
-    ax2.tick_params(axis="y", labelcolor="#2980B9")
-
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
+    if has_lr and lrs:
+        ax2 = ax1.twinx()
+        ax2.plot(epochs, lrs, color="#2980B9", linewidth=1.2, linestyle="--", label="Learning Rate")
+        ax2.set_ylabel("Learning Rate", color="#2980B9")
+        ax2.tick_params(axis="y", labelcolor="#2980B9")
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
+    else:
+        ax1.legend(loc="upper right")
 
     ax1.set_title(title)
     plt.tight_layout()

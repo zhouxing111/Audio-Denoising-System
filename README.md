@@ -8,7 +8,7 @@
 - **多算法支持**：频域维纳滤波 / 谱减法 / U-Net / Hybrid (U-Net+Wiener 混合) / 音频修复（时域插值 / 频域重建 / U-Net 迭代修复）
 - **离线预混合加速**：训练前一次性生成 .npy 训练对，训练速度提升 10~20 倍
 - **实时可视化**：时域波形对比、STFT 频谱图、梅尔谱，左右分屏同步展示
-- **全面评估体系**：SNR / SegSNR / SI-SDR / STOI / PESQ / LSD / DNSMOS 共 7 项指标，得分板彩色编码
+- **全面评估体系**：SNR / SegSNR / SI-SDR / STOI / PESQ / LSD / DNSMOS (P.835 SIG/BAK/OVRL) 共 10 项指标，得分板彩色编码
 - **噪声类型诊断**：VAD 分离语音帧 → 频谱分析 → 自动识别白噪声/低频嗡嗡/背景人声/高频电子噪声
 - **动态在线混合**：训练阶段实时合成带噪语音（随机 SNR∈[-5,+15]dB），无需预生成海量带噪数据集
 - **音频回放**：带噪/降噪/纯净三段切换播放，支持进度拖拽
@@ -188,12 +188,12 @@ python scripts/inference.py song.wav --algo unet --ckpt checkpoints/unet_finetun
 
 降噪评估（原始+微调 U-Net 对比）：
 ```bash
-python scripts/evaluate.py --clean_source datasets/processed/clean --noise_source datasets/processed/noise --split_json datasets/splits/test_clean.json --algorithms wiener spectral_sub unet unet_ft hybrid --ckpt checkpoints/unet/best_model.pt --ft_ckpt checkpoints/unet_finetuned/best_model.pt --num_test 30 --output evaluation_report.csv
+python scripts/evaluate.py --clean_source datasets/processed/clean --noise_source datasets/processed/noise --split_json datasets/splits/test_clean.json --algorithms wiener spectral_sub unet unet_ft hybrid --ckpt checkpoints/unet/best_model.pt --ft_ckpt checkpoints/unet_finetuned/best_model.pt --num_test 30 --output evaluations/evaluation_report.csv
 ```
 
 音频修复评估（自动损坏→修复→对比）：
 ```bash
-python scripts/evaluate.py --mode inpainting --clean_source datasets/processed/clean --split_json datasets/splits/test_clean.json --methods spline spectral unet --ckpt checkpoints/unet/best_model.pt --num_test 20 --output evaluation_report_inpainting.csv
+python scripts/evaluate.py --mode inpainting --clean_source datasets/processed/clean --split_json datasets/splits/test_clean.json --methods spline spectral unet --ckpt checkpoints/unet/best_model.pt --num_test 20 --output evaluations/evaluation_report_inpainting.csv
 ```
 
 ### 3. 生成实验图表
@@ -326,6 +326,7 @@ audio-denoising/
 │   ├── unet/                   # 原始训练权重
 │   └── unet_finetuned/         # 微调权重
 ├── logs/                       # 训练日志和 loss CSV (gitignore)
+├── evaluations/                # 评估报告 CSV (gitignore)
 ├── results/                    # 实验图表输出 (gitignore)
 ├── requirements.txt            # Python 完整依赖列表
 └── README.md                   # 项目文档
@@ -357,7 +358,7 @@ audio-denoising/
 
 | 文件 | 功能 |
 |------|------|
-| `metrics.py` | `compute_all_metrics()` — 计算 8 项客观指标 (SNR/SegSNR/SI-SDR/STOI/PESQ/LSD/DNSMOS) |
+| `metrics.py` | `compute_all_metrics()` — 计算 10 项指标 (SNR/SegSNR/SI-SDR/STOI/PESQ/LSD/DNSMOS_SIG/BAK/OVRL) |
 | `visualizer.py` | 包含基础展示图 (波形/频谱/梅尔谱) 和科研图表 (训练曲线/算法对比柱状图/t-SNE/IRM 掩膜/激活图)，共计 11 个绘图函数 |
 
 | 指标 | 类别 | 范围 | 说明 |
@@ -369,7 +370,11 @@ audio-denoising/
 | PESQ_WB | 感知 | 1.0~4.5 | 宽带感知语音质量评估 (ITU-T P.862) |
 | PESQ_NB | 感知 | -0.5~4.5 | 窄带感知语音质量评估 |
 | LSD | 物理 | dB | 对数谱距离，值越低频域保真度越好 |
-| DNSMOS | 无参考 | 1~5 | MIT 预训练模型预测 MOS 分，无需参考信号 |
+| DNSMOS_SIG | 无参考 | 1~5 | P.835 语音信号质量 (人声是否受损) |
+| DNSMOS_BAK | 无参考 | 1~5 | P.835 背景噪声抑制质量 (降噪是否自然) |
+| DNSMOS_OVRL | 无参考 | 1~5 | P.835 整体听感质量 |
+
+> **DNSMOS P.835 解读**：BAK 高 + SIG 低 = 模型过度切除（背景干净但人声受损），是 U-Net 跨域泛化不足的核心诊断指标。三项均为无参考，无需纯净参考信号。
 
 ### 交互表现层 (`ui/`)
 

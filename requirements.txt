@@ -32,8 +32,8 @@ sounddevice>=0.4.6
 pyroomacoustics>=0.7.0
 matplotlib>=3.7.0
 
-# --- 无参考感知指标 (可选, DNSMOS 需要) ---
-# onnxruntime>=1.15.0
+# --- 无参考感知指标 (DNSMOS P.835) ---
+torchmetrics>=1.0.0
 
 # --- 开发与测试 (可选) ---
 pytest>=7.0.0
