@@ -20,6 +20,16 @@ from evaluation.metrics import compute_all_metrics
 from evaluation.visualizer import plot_comparison
 
 
+def _get_device():
+    """返回最佳可用设备: CUDA > MPS > CPU。"""
+    import torch
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(
@@ -85,7 +95,7 @@ def main() -> None:
     elif args.algo == "unet":
         import torch
         from models.unet import UNetDenoiser
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = _get_device()
         model = UNetDenoiser(n_fft=512, hop_length=256).to(device)
         ckpt = torch.load(args.ckpt, map_location=device)
         model.load_state_dict(ckpt["model_state_dict"])

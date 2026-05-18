@@ -15,6 +15,18 @@ import random
 import numpy as np
 from scipy.interpolate import CubicSpline
 
+import torch
+
+
+def _get_device() -> torch.device:
+    """返回最佳可用设备: CUDA > MPS > CPU。"""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -295,7 +307,7 @@ class AudioInpainter:
         if model_ckpt is None:
             raise ValueError("U-Net 修复需要 --ckpt 参数指定模型权重路径")
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = _get_device()
         model = UNetDenoiser(n_fft=self.n_fft, hop_length=self.hop_length).to(device)
         ckpt = torch.load(model_ckpt, map_location=device)
         model.load_state_dict(ckpt["model_state_dict"])

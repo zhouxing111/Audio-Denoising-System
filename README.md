@@ -184,9 +184,15 @@ python scripts/finetune.py --clean_dir datasets/finetune/processed/clean --noise
 python scripts/inference.py song.wav --algo unet --ckpt checkpoints/unet_finetuned/best_model.pt --output clean.wav
 ```
 
-### 2. 批量评估
+### 2. 准备评估数据 + 批量评估
 
-降噪评估（原始+微调 U-Net 对比）：
+首先生成三域（英文/中文/歌曲）测试数据：
+```bash
+python scripts/prepare_eval_data.py
+```
+自动从三个领域各抽 10 条纯净语音，分别生成降噪测试对 (noisy+clean) 和修复测试对 (damaged+clean)，保存至 `evaluations/test_data/`。
+
+降噪评估（三域分别对比）：
 ```bash
 python scripts/evaluate.py --clean_source datasets/processed/clean --noise_source datasets/processed/noise --split_json datasets/splits/test_clean.json --algorithms wiener spectral_sub unet unet_ft hybrid --ckpt checkpoints/unet/best_model.pt --ft_ckpt checkpoints/unet_finetuned/best_model.pt --num_test 30 --output evaluations/evaluation_report.csv
 ```
@@ -202,6 +208,8 @@ python scripts/evaluate.py --mode inpainting --clean_source datasets/processed/c
 
 ```bash
 python scripts/plot_results.py --eval_csv evaluation_report.csv --train_csv logs/training_history.csv --ft_train_csv logs/finetune_history.csv --model_ckpt checkpoints/unet/best_model.pt --output_dir results/figures
+```
+`--test_audio` 自动从 `evaluations/test_data/` 选取，无需手动指定。
 ```
 
 | 图表文件 | 生成条件 | 内容 |
@@ -313,6 +321,7 @@ audio-denoising/
 │   ├── train.py                # U-Net 训练 (--use_premix 启用预混合模式)
 │   ├── finetune.py             # U-Net 微调 (冻结 Encoder 前 4 层)
 │   ├── prepare_finetune_data.py # 微调数据预处理
+│   ├── prepare_eval_data.py    # 三域评估测试数据生成
 │   ├── inference.py            # 单文件推理 (--algo wiener|spectral_sub|unet|hybrid|inpaint)
 │   ├── evaluate.py             # 批量评估 → CSV 对比报告
 │   └── plot_results.py         # 一键生成全部实验图表

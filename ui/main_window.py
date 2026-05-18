@@ -48,6 +48,17 @@ from ui.audio_recorder import AudioRecorder
 
 logger = logging.getLogger(__name__)
 
+
+def _get_device():
+    """返回最佳可用设备: CUDA > MPS > CPU。"""
+    import torch
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 # 模式 → 方法列表
 DENOISING_METHODS = ["Wiener Filter", "Spectral Subtraction", "U-Net", "Hybrid (U-Net + Wiener)"]
 INPAINTING_METHODS = ["Spline Interpolation", "Spectral Inpainting", "U-Net Inpainting"]
@@ -160,7 +171,7 @@ class BatchWorker(QThread):
         ckpt_path = ckpt or self.model_ckpt
         if not ckpt_path or not Path(ckpt_path).exists():
             raise FileNotFoundError(f"U-Net checkpoint 未找到: {ckpt_path}")
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = _get_device()
         model = UNetDenoiser(n_fft=512, hop_length=256).to(device)
         state = torch.load(ckpt_path, map_location=device)
         model.load_state_dict(state["model_state_dict"])

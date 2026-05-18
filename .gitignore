@@ -26,6 +26,7 @@ logs/
 # 实验结果图表和评估报告
 results/
 evaluations/*.csv
+evaluations/test_data/
 
 # 虚拟环境
 .venv/

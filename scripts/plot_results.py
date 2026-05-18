@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--test_audio", type=str, default=None,
-        help="测试音频路径 (用于 IRM+激活图演示)",
+        help="测试音频路径 (留空则自动从 evaluations/test_data/ 选取)",
     )
     parser.add_argument(
         "--tsne", action="store_true",
@@ -153,27 +153,55 @@ def generate_training_plot(train_csv: str, output_dir: str, ft_train_csv: str | 
     logging.info(f"训练曲线图: {path}")
 
 
+def _auto_find_test_audio() -> str | None:
+    """自动从 evaluations/test_data/ 找一条降噪测试音频。"""
+    candidates = [
+        "evaluations/test_data/denoising/en/noisy",
+        "evaluations/test_data/denoising/zh/noisy",
+        "evaluations/test_data/denoising/sing/noisy",
+    ]
+    for d in candidates:
+        p = Path(d)
+        if p.exists():
+            wavs = sorted(p.glob("*.wav"))
+            if wavs:
+                return str(wavs[0])
+    return None
+
+
 def generate_model_plots(
-    model_ckpt: str, test_audio: str, output_dir: str, tsne: bool = False,
+    model_ckpt: str, test_audio: str | None, output_dir: str, tsne: bool = False,
 ) -> None:
     """生成 IRM 掩膜可视化和 t-SNE 特征图。
 
     Args:
         model_ckpt: U-Net checkpoint 路径.
-        test_audio: 测试音频路径.
+        test_audio: 测试音频路径 (None 则自动从 evaluations/test_data/ 选取).
         output_dir: 输出目录.
-        tsne: 是否生成 t-SNE 图 (随机频谱缺乏真实多样性时可能崩溃).
+        tsne: 是否生成 t-SNE 图.
     """
     if not model_ckpt or not Path(model_ckpt).exists():
         logging.warning("未提供有效 model_ckpt，跳过模型图表")
         return
+
+    if not test_audio:
+        test_audio = _auto_find_test_audio()
+        if test_audio:
+            logging.info(f"自动选取测试音频: {test_audio}")
+        else:
+            logging.warning("未找到评估测试音频，跳过 IRM/激活图 (可通过 --test_audio 指定)")
 
     import torch
 
     from models.unet import UNetDenoiser
 
     try:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
         logging.info(f"加载模型 (device={device}) ...")
         model = UNetDenoiser(n_fft=512, hop_length=256).to(device)
         ckpt = torch.load(model_ckpt, map_location=device)
@@ -220,7 +248,7 @@ def _plot_irm_and_activation(
         fig = plot_irm_mask(noisy_mag, mask, sr=16000, hop_length=256)
         path = os.path.join(output_dir, "irm_mask_example.png")
         fig.savefig(path, dpi=150, bbox_inches="tight")
-        plt = __import__("matplotlib.pyplot")
+        import matplotlib.pyplot as plt
         plt.close(fig)
         logging.info(f"IRM 掩膜图: {path}")
 
@@ -242,6 +270,7 @@ def _plot_irm_and_activation(
             fig2 = plot_activation_map(activations["enc1_conv0"], noisy_mag)
             path2 = os.path.join(output_dir, "activation_map.png")
             fig2.savefig(path2, dpi=150, bbox_inches="tight")
+            import matplotlib.pyplot as plt
             plt.close(fig2)
             logging.info(f"激活图: {path2}")
     except Exception as e:
@@ -325,7 +354,7 @@ def _plot_tsne_features(model, output_dir: str, device) -> None:
                 fig3 = plot_feature_tsne(features, labels, title="U-Net Bottleneck Feature t-SNE")
             path3 = os.path.join(output_dir, "feature_tsne.png")
             fig3.savefig(path3, dpi=150, bbox_inches="tight")
-            plt = __import__("matplotlib.pyplot")
+            import matplotlib.pyplot as plt
             plt.close(fig3)
             logging.info(f"特征可视化图: {path3}")
         else:

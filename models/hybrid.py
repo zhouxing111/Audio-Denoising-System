@@ -18,6 +18,15 @@ import torch
 from .unet import UNetDenoiser
 
 
+def _get_device() -> torch.device:
+    """返回最佳可用设备: CUDA > MPS > CPU。"""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 class HybridDenoiser:
     """U-Net + Wiener 混合降噪器。
 
@@ -45,7 +54,7 @@ class HybridDenoiser:
         """
         if self._model is not None:
             return
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = _get_device()
         self._model = UNetDenoiser(n_fft=self.n_fft, hop_length=self.hop_length).to(self._device)
         ckpt = torch.load(ckpt_path, map_location=self._device)
         self._model.load_state_dict(ckpt["model_state_dict"])

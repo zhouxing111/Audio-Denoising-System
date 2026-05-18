@@ -27,6 +27,16 @@ from data.preprocess import load_audio, normalize_rms, rms_energy
 from evaluation.metrics import compute_all_metrics
 
 
+def _get_device():
+    """返回最佳可用设备: CUDA > MPS > CPU。"""
+    import torch
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(description="批量评估降噪/修复算法")
@@ -334,7 +344,7 @@ def main() -> None:
         elif algo == "unet_ft":
             import torch
             from models.unet import UNetDenoiser
-            ft_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            ft_device = _get_device()
             unet_ft_model = UNetDenoiser(n_fft=512, hop_length=256).to(ft_device)
             ft_ckpt = torch.load(args.ft_ckpt, map_location=ft_device)
             unet_ft_model.load_state_dict(ft_ckpt["model_state_dict"])
@@ -344,7 +354,7 @@ def main() -> None:
         elif algo == "unet":
             import torch
             from models.unet import UNetDenoiser
-            unet_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            unet_device = _get_device()
             unet_model = UNetDenoiser(n_fft=512, hop_length=256).to(unet_device)
             ckpt = torch.load(args.ckpt, map_location=unet_device)
             unet_model.load_state_dict(ckpt["model_state_dict"])
